@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>听写本 · 单词听写与错题复习</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#" data-nav="setup">
+    <span class="brand-mark">听</span>
+    <span class="brand-text">听写本<small>DICTATION</small></span>
+  </a>
+  <nav class="nav" id="nav">
+    <button class="nav-btn active" data-nav="setup" type="button">听写</button>
+    <button class="nav-btn" data-nav="books" type="button">词本</button>
+    <button class="nav-btn" data-nav="history" type="button">记录</button>
+    <button class="nav-btn" data-nav="settings" type="button">设置</button>
+  </nav>
+  <div class="top-stats">
+    <span class="chip"><i class="dot new"></i>新词 <b id="stat-new">—</b></span>
+    <span class="chip"><i class="dot wrong"></i>错题 <b id="stat-wrong">—</b></span>
+    <span class="chip"><i class="dot done"></i>掌握 <b id="stat-mastered">—</b></span>
+  </div>
+</header>
+
+<main>
+  <!-- ============================ 听写设置 ============================ -->
+  <section id="view-setup" class="view active">
+    <div class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">听 · 写 · 查 · 记</p>
+        <h1>把单词听进耳朵，<br><em>把意思写出来。</em></h1>
+        <p class="lede">设置词库和数量，机器按词频抽词朗读；你只管写。连续答对 5 次的词会自动离开新词本，答错的词会留在错题本里继续出现。</p>
+      </div>
+      <div class="hero-card">
+        <div class="hero-numbers">
+          <div><b id="hero-new">—</b><span>新词本</span></div>
+          <div><b id="hero-mastered">—</b><span>已掌握</span></div>
+          <div><b id="hero-total">—</b><span>词库总量</span></div>
+        </div>
+        <div class="progress-track"><span id="hero-bar"></span></div>
+        <p class="tiny">错题本 <b id="hero-wrong">—</b> 个 · 掌握阈值 <b id="hero-threshold">5</b> 连对</p>
+      </div>
+    </div>
+
+    <div class="setup-grid">
+      <div class="paper-card setup-card">
+        <div class="card-head">
+          <h2>本轮设置</h2>
+          <span class="tag" id="pool-range">—</span>
+        </div>
+
+        <div class="field-grid">
+          <label class="field field-wide">词库来源
+            <select id="source"></select>
+            <small id="source-desc">—</small>
+          </label>
+          <label class="field">词频前
+            <input id="pool" type="number" min="0" max="100000" value="100" inputmode="numeric">
+            <small>0 = 全部</small>
+          </label>
+          <label class="field">本轮听
+            <input id="count" type="number" min="1" max="500" value="50" inputmode="numeric">
+            <small>最多 500</small>
+          </label>
+          <label class="field">种子
+            <span class="seed-row">
+              <input id="seed" type="text" inputmode="numeric" maxlength="9" placeholder="自动生成">
+              <button id="reroll" class="mini" type="button">换一个</button>
+            </span>
+            <small>同种子可复现（词池不变时）</small>
+          </label>
+        </div>
+
+        <div class="field">
+          <span class="field-label">播放方式</span>
+          <div class="segmented" id="mode-seg">
+            <button type="button" data-mode="auto" class="active">自动连读</button>
+            <button type="button" data-mode="manual">读完就停</button>
+          </div>
+        </div>
+
+        <div class="order-row">
+          <span class="field-label">播放顺序</span>
+          <div class="segmented compact" id="order-seg">
+            <button type="button" data-order="random" class="active">随机</button>
+            <button type="button" data-order="frequency">按词频</button>
+          </div>
+          <span class="hint" id="order-hint">按种子打乱顺序</span>
+        </div>
+
+        <div class="field-grid playback-grid">
+          <label class="field">每词重复
+            <select id="repeat">
+              <option value="1">1 次</option>
+              <option value="2">2 次</option>
+            </select>
+          </label>
+          <label class="field">语速
+            <span class="range-row">
+              <input id="rate" type="range" min="0.6" max="1.2" step="0.05" value="1">
+              <b id="rate-val">1.0</b>
+            </span>
+          </label>
+          <label class="field">英文语音
+            <select id="voice"></select>
+          </label>
+        </div>
+
+        <div class="field" id="interval-field">
+          <span class="field-label">自动间隔 <b id="interval-val">6</b> 秒 <small>读完后的等待时间</small></span>
+          <input id="interval" type="range" min="1" max="30" step="1" value="6">
+        </div>
+
+        <div class="toggle-row">
+          <label class="switch"><input id="show-word" type="checkbox"><span></span>显示英文（默认纯听力）</label>
+          <button id="test-voice" class="ghost mini" type="button">试听语音</button>
+        </div>
+
+        <div class="start-row">
+          <div id="pool-hint" class="pool-hint">—</div>
+          <button id="start-btn" class="primary big" type="button">开始听写 <span>→</span></button>
+        </div>
+      </div>
+
+      <aside class="side-stack">
+        <div class="paper-card rule-card">
+          <div class="card-head"><h2>新词本规则</h2></div>
+          <p>新词本一开始包含所选词库的<b>全部单词</b>。</p>
+          <p>每次检查后，连续答对 <b id="rule-threshold">5</b> 次的词会移入「已掌握」，下一轮不再读。</p>
+          <p>答错的词留在新词本，同时进入「错题本」；错题本不是另一套词，而是新词本里答错过的视图。</p>
+          <button class="link-btn" data-nav="books" type="button">打开词本 →</button>
+        </div>
+
+        <div class="paper-card recent-card">
+          <div class="card-head"><h2>最近几轮</h2><button id="refresh-state" class="ghost mini" type="button">刷新</button></div>
+          <div id="recent-list" class="recent-list"><p class="empty">还没有记录，开始第一轮吧。</p></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============================ 播放 ============================ -->
+  <section id="view-session" class="view">
+    <div class="session-wrap">
+      <div class="session-meta">
+        <button id="leave-session" class="ghost mini" type="button">← 退出</button>
+        <span id="session-source">—</span>
+        <span class="dot-sep"></span>
+        <span>种子 <b id="session-seed">—</b></span>
+      </div>
+      <div class="listen-card">
+        <div class="listen-kicker">第 <b id="session-n">1</b> / <span id="session-total">50</span> 个</div>
+        <div id="session-word" class="word-display hidden">word</div>
+        <div id="speaker" class="speaker"><span></span><span></span><span></span><span></span></div>
+        <div id="countdown" class="countdown">准备中…</div>
+        <div class="session-progress"><span id="session-bar"></span></div>
+        <div class="session-answer-wrap">
+          <input id="session-answer" class="session-answer" type="text" placeholder="在这里写中文意思，按 Enter 到下一个…" autocomplete="off" spellcheck="false">
+          <p id="session-answer-hint" class="session-answer-hint">按 Enter 或点「下一个」：自动保存上一题，输入框清空。</p>
+        </div>
+        <div class="controls">
+          <button id="pause-btn" class="primary" type="button">暂停</button>
+          <button id="repeat-btn" class="ghost" type="button">重读</button>
+          <button id="prev-btn" class="ghost" type="button">上一个</button>
+          <button id="next-btn" class="ghost" type="button">下一个</button>
+          <button id="finish-btn" class="danger ghost" type="button">结束</button>
+        </div>
+        <p id="session-hint" class="hint">空格：暂停/继续 · → / N：下一个 · R：重读 · ←：上一个 · Esc：结束</p>
+      </div>
+      <p class="listen-note">可以直接在上面的输入框写中文意思：按 Enter 或点「下一个」会自动保存上一题并清空。也可以写在纸上，结束后再录入。</p>
+    </div>
+  </section>
+
+  <!-- ============================ 答题 ============================ -->
+  <section id="view-answers" class="view">
+    <div class="answers-wrap">
+      <div class="session-meta">
+        <button class="ghost mini" data-nav="setup" type="button">← 返回</button>
+        <span id="answers-title">答题纸</span>
+        <span id="answers-status" class="tag">待填写</span>
+      </div>
+
+      <div id="answers-form" class="paper-card">
+        <div class="card-head">
+          <div>
+            <h2>填写你的答案</h2>
+            <p class="hint" id="answers-subtitle">—</p>
+          </div>
+          <span class="tag" id="answers-count">0 / 0</span>
+        </div>
+        <div id="answer-rows" class="answer-rows"></div>
+        <div class="actions">
+          <button id="ai-check" class="primary" type="button">AI 判卷</button>
+          <button id="save-answers" class="ghost" type="button">保存答题纸</button>
+          <button id="batch-answers" class="ghost" type="button">批量填写</button>
+          <button id="export-packet" class="ghost" type="button">导出答题包</button>
+          <button id="download-sheet" class="ghost" type="button">下载空白答题纸</button>
+          <button id="copy-command" class="ghost" type="button">复制检查指令</button>
+          <button id="replay-session" class="ghost" type="button">重听本轮</button>
+        </div>
+        <p class="hint">AI 判卷需要先在「设置」里配置 DeepSeek API Key；也可以保存答题纸后，在对话里发送「检查 <场次ID>」交给我复核。</p>
+        <p class="hint">当前检查指令：<b id="check-command">检查 …</b></p>
+      </div>
+
+      <div id="result-panel" class="paper-card hidden"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 词本 ============================ -->
+  <section id="view-books" class="view">
+    <div class="page-head">
+      <div><p class="eyebrow">词本</p><h1>新词本 · 错题本 · 已掌握</h1></div>
+      <div class="page-actions">
+        <button id="start-wrongbook" class="primary" type="button">用错题本开始</button>
+        <button id="export-book" class="ghost" type="button">导出</button>
+      </div>
+    </div>
+    <div class="paper-card books-card">
+      <div class="book-toolbar">
+        <div class="tabs" id="book-tabs">
+          <button data-book="new" class="active" type="button">新词本</button>
+          <button data-book="wrong" type="button">错题本</button>
+          <button data-book="mastered" type="button">已掌握</button>
+        </div>
+        <div class="book-filters">
+          <input id="book-search" type="search" placeholder="搜索单词或释义">
+          <select id="book-sort">
+            <option value="frq">按词频</option>
+            <option value="alpha">按字母</option>
+            <option value="wrong">错误次数</option>
+            <option value="streak">连续答对</option>
+          </select>
+        </div>
+      </div>
+      <div id="book-summary" class="book-summary">—</div>
+      <div class="table-wrap">
+        <table class="book-table">
+          <thead><tr><th>单词</th><th>释义</th><th>连对</th><th>错次</th><th></th></tr></thead>
+          <tbody id="book-body"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="book-pager"></div>
+    </div>
+  </section>
+
+  <!-- ============================ 记录 ============================ -->
+  <section id="view-history" class="view">
+    <div class="page-head">
+      <div><p class="eyebrow">记录</p><h1>每一轮听写</h1></div>
+      <button id="refresh-history" class="ghost" type="button">刷新</button>
+    </div>
+    <div class="paper-card">
+      <div class="table-wrap">
+        <table class="history-table">
+          <thead><tr><th>时间</th><th>词库</th><th>种子</th><th>播放</th><th>状态</th><th>正确率</th><th></th></tr></thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ 设置 ============================ -->
+  <section id="view-settings" class="view">
+    <div class="page-head"><div><p class="eyebrow">设置</p><h1>学习规则与数据</h1></div></div>
+    <div class="settings-grid">
+      <div class="paper-card">
+        <div class="card-head"><h2>掌握阈值</h2></div>
+        <p class="hint">连续答对多少次后，单词移出新词本（同时移出错题本）。默认 5。</p>
+        <div class="inline-form"><input id="threshold-input" type="number" min="1" max="20" value="5"><button id="save-threshold" class="primary" type="button">保存</button></div>
+        <p class="hint">改变阈值会重新计算所有历史记录。</p>
+      </div>
+      <div class="paper-card">
+        <div class="card-head"><h2>语音诊断</h2></div>
+        <p class="hint" id="voice-diagnostic">正在检测浏览器英文语音…</p>
+        <button id="test-voice-2" class="ghost" type="button">试听</button>
+      </div>
+      <div class="paper-card ai-card">
+        <div class="card-head"><h2>AI 判卷（DeepSeek）</h2><span id="ai-status" class="tag warm">未配置</span></div>
+        <p class="hint" id="ai-hint">配置 API Key 后，答题页可以直接点「AI 判卷」自动判分。</p>
+        <label class="field">API Key
+          <input id="ai-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+        </label>
+        <div class="field-grid two">
+          <label class="field">模型
+            <input id="ai-model" type="text" value="deepseek-chat" spellcheck="false">
+          </label>
+          <label class="field">Base URL
+            <input id="ai-base" type="text" value="https://api.deepseek.com" spellcheck="false">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="ai-save" class="primary" type="button">保存</button>
+          <button id="ai-test" class="ghost" type="button">测试连接</button>
+          <button id="ai-clear" class="danger" type="button">清除 Key</button>
+        </div>
+        <p class="hint">Key 只保存在本机 <code>data/secrets.json</code>，不会回传给浏览器。判卷时会把本轮单词、参考释义和你的答案发送给 DeepSeek。</p>
+      </div>
+      <div class="paper-card danger-card">
+        <div class="card-head"><h2>清空学习记录</h2></div>
+        <p class="hint">会归档现有检查记录，新词本回到全部单词；历史场次和答题纸保留。</p>
+        <button id="reset-all" class="danger" type="button">清空学习记录</button>
+      </div>
+      <div class="paper-card">
+        <div class="card-head"><h2>关于</h2></div>
+        <p class="hint">听写本 v<span id="app-version">0.1.0</span> · 本地运行，数据保存在 <code>data/</code>。</p>
+        <p class="hint">词库来自 ECDICT（MIT），词频为 COCA 当代语料库顺序。</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="word-dialog" class="word-dialog">
+  <div class="dialog-head"><h3 id="dialog-word">word</h3><button id="dialog-close" class="mini ghost" type="button">关闭</button></div>
+  <div id="dialog-body"></div>
+</dialog>
+
+<dialog id="batch-dialog" class="word-dialog batch-dialog">
+  <div class="dialog-head"><h3>批量填写答案</h3><button id="batch-close" class="mini ghost" type="button">关闭</button></div>
+  <div class="batch-body">
+    <p class="hint">每行一题：题号 + 中文意思，例如 <code>1. 放弃</code>。可以从笔记里粘贴，未写的题会留空。</p>
+    <textarea id="batch-text" spellcheck="false" placeholder="1. 放弃&#10;2. 能力&#10;3. 苹果"></textarea>
+    <div class="actions">
+      <button id="batch-apply" class="primary" type="button">填入答题纸</button>
+      <button id="batch-cancel" class="ghost" type="button">取消</button>
+    </div>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/app.js" defer></script>
+</body>
+</html>

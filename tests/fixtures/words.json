@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "source": "fixture",
+    "license": "test",
+    "counts": {"all": 7, "cet4": 5, "cet6": 3, "cet6_new": 1}
+  },
+  "words": [
+    {"word": "abandon", "phonetic": "ə'bændən", "translation": "vt. 放弃, 抛弃, 遗弃", "frq": 10, "bnc": 10, "tags": ["cet4", "cet6"]},
+    {"word": "ability", "phonetic": "ə'biliti", "translation": "n. 能力, 才干\n[经] 能力, 才能", "frq": 20, "bnc": 20, "tags": ["cet4"]},
+    {"word": "apple", "phonetic": "'æpl", "translation": "n. 苹果; 苹果树", "frq": 30, "bnc": 30, "tags": ["cet4"]},
+    {"word": "banana", "phonetic": "bə'nɑ:nə", "translation": "n. 香蕉", "frq": 40, "bnc": 40, "tags": ["cet4"]},
+    {"word": "car", "phonetic": "kɑ:", "translation": "n. 汽车, 轿车", "frq": 50, "bnc": 50, "tags": ["cet4", "cet6"]},
+    {"word": "dog", "phonetic": "dɔg", "translation": "n. 狗, 犬", "frq": 60, "bnc": 60, "tags": ["cet4"]},
+    {"word": "zebra", "phonetic": "'zi:brə", "translation": "n. 斑马", "frq": 70, "bnc": 70, "tags": ["cet6"]}
+  ]
+}

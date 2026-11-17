@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+import json
+import shutil
+import sys
+import tempfile
+import threading
+import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from dictation import ai  # noqa: E402
+from dictation.checking import apply_result, compute_result  # noqa: E402
+from dictation.store import load_check, load_session  # noqa: E402
+from dictation.words import WordRepository  # noqa: E402
+from server import App, make_handler  # noqa: E402
+
+FIXTURE = Path(__file__).parent / "fixtures" / "words.json"
+
+
+class ApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+        for name in ("sessions", "checks", "archive"):
+            (self.data / name).mkdir()
+        shutil.copy(FIXTURE, self.data / "words.json")
+        self.app = App(self.data, ROOT / "web")
+        handler = make_handler(self.app)
+        handler.log_message = lambda self, fmt, *args: None  # type: ignore[method-assign]
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd.daemon_threads = True
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=3)
+        self.tmp.cleanup()
+
+    def request(self, method, path, body=None):
+        payload = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            method=method,
+            headers={"Content-Type": "application/json"} if payload is not None else {},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            raw = response.read().decode("utf-8")
+            content_type = response.headers.get("Content-Type", "")
+            if "application/json" in content_type:
+                return response.status, json.loads(raw)
+            return response.status, raw
+
+    # ------------------------------------------------------------------
+    def test_state_and_static(self):
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(state["stats"]["total"], 7)
+        self.assertEqual(state["stats"]["new"], 7)
+        self.assertEqual(len(state["sources"]), 8)
+        status, html = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("听写本", html)
+
+    def test_create_session_is_reproducible_and_hides_answers(self):
+        body = {"source": "new_cet4", "pool": 5, "count": 3, "seed": 123456,
+                "mode": "auto", "interval": 6, "repeat": 1, "order": "random"}
+        status, first = self.request("POST", "/api/sessions", body)
+        self.assertEqual(status, 201)
+        session = first["session"]
+        self.assertEqual(session["seed"], 123456)
+        self.assertEqual(len(session["words"]), 3)
+        self.assertEqual(session["pool_size"], 5)
+        self.assertNotIn("translation", session["words"][0])
+        status, second = self.request("POST", "/api/sessions", body)
+        self.assertEqual(
+            [w["word"] for w in session["words"]],
+            [w["word"] for w in second["session"]["words"]],
+        )
+        # The new-word book is CET-4 only and its top-5 pool is fixed.
+        self.assertTrue(all(w["word"] != "zebra" for w in session["words"]))
+
+    def test_count_is_capped_by_pool(self):
+        status, data = self.request("POST", "/api/sessions", {
+            "source": "new_cet4", "pool": 2, "count": 10, "seed": 5,
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual(len(data["session"]["words"]), 2)
+        self.assertTrue(data["warnings"])
+
+    def test_heard_answers_report_and_books(self):
+        status, created = self.request("POST", "/api/sessions", {
+            "source": "new_all", "pool": 7, "count": 7, "seed": 99,
+        })
+        session_id = created["session"]["id"]
+        self.request("POST", f"/api/sessions/{session_id}/heard", {"heard_count": 7})
+        status, detail = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertEqual(detail["heard_count"], 7)
+        self.assertFalse(detail["has_answers"])
+        self.assertFalse(detail["has_check"])
+
+        answers = {
+            "abandon": "放弃", "ability": "能力", "apple": "苹果",
+            "banana": "香蕉", "car": "汽车", "dog": "狗", "zebra": "斑马",
+        }
+        by_number = {str(w["n"]): answers[w["word"]] for w in detail["words"]}
+        status, saved = self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": by_number})
+        self.assertEqual(status, 200)
+        self.assertIn("markdown", saved["paths"])
+        status, detail = self.request("GET", f"/api/sessions/{session_id}")
+        self.assertTrue(detail["has_answers"])
+        self.assertEqual(len(detail["answers"]), 7)
+
+        session = load_session(self.data, session_id)
+        repo = WordRepository(self.data)
+        result = compute_result(session, by_number, threshold=5)
+        apply_result(self.data, session, result, repo.total_count())
+        status, report = self.request("GET", f"/api/sessions/{session_id}/report")
+        self.assertEqual(status, 200)
+        self.assertEqual(report["check"]["summary"]["correct"], 7)
+        self.assertTrue(report["markdown"])
+
+        status, wrongbook = self.request("GET", "/api/books?book=wrong")
+        self.assertEqual(wrongbook["total"], 0)
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["wrong"], 0)
+        self.assertEqual(state["recent_sessions"][0]["status"], "checked")
+
+    def test_threshold_setting(self):
+        status, data = self.request("PUT", "/api/settings", {"threshold": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["settings"]["threshold"], 3)
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["settings"]["threshold"], 3)
+        self.assertEqual(state["stats"]["threshold"], 3)
+
+    def test_ai_settings_and_connection(self):
+        status, data = self.request("PUT", "/api/ai/settings", {
+            "api_key": "sk-test-123456",
+            "model": "deepseek-chat",
+            "base_url": "https://api.deepseek.com/",
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ai"]["configured"])
+        self.assertNotIn("sk-test-123456", json.dumps(data))
+        self.assertEqual(data["ai"]["masked_key"], "sk-t…3456")
+        status, state = self.request("GET", "/api/state")
+        self.assertTrue(state["ai"]["configured"])
+        with patch("dictation.ai.call_chat", return_value="连接正常"):
+            status, data = self.request("POST", "/api/ai/test", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["reply"], "连接正常")
+
+    def test_ai_check_with_fake_api(self):
+        ai.save_ai_settings(self.data, api_key="sk-test")
+        status, created = self.request("POST", "/api/sessions", {
+            "source": "new_all", "pool": 7, "count": 2, "seed": 321,
+        })
+        session_id = created["session"]["id"]
+        self.request("POST", f"/api/sessions/{session_id}/heard", {"heard_count": 2})
+        fake = json.dumps({
+            "results": [
+                {"n": 1, "verdict": "correct", "matched": "命中", "reason": "ok"},
+                {"n": 2, "verdict": "wrong", "matched": "", "reason": "不对"},
+            ]
+        }, ensure_ascii=False)
+        with patch("dictation.ai.call_chat", return_value=fake):
+            status, data = self.request(
+                "POST",
+                f"/api/sessions/{session_id}/ai-check",
+                {"answers": {"1": "x", "2": "y"}},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["check"]["engine"], "deepseek")
+        self.assertEqual(data["check"]["summary"]["correct"], 1)
+        self.assertEqual(data["check"]["summary"]["wrong"], 1)
+        self.assertTrue(data["session"]["has_check"])
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["wrong"], 1)
+        status, wrongbook = self.request("GET", "/api/books?book=wrong")
+        self.assertEqual(wrongbook["total"], 1)
+
+    def test_five_correct_sessions_master_words(self):
+        answers = {
+            "abandon": "放弃", "ability": "能力", "apple": "苹果",
+            "banana": "香蕉", "car": "汽车", "dog": "狗", "zebra": "斑马",
+        }
+        repo = WordRepository(self.data)
+        for index in range(5):
+            status, created = self.request("POST", "/api/sessions", {
+                "source": "new_all", "pool": 7, "count": 7, "seed": 1000 + index,
+            })
+            self.assertEqual(status, 201)
+            session_id = created["session"]["id"]
+            self.request("POST", f"/api/sessions/{session_id}/heard", {"heard_count": 7})
+            session = load_session(self.data, session_id)
+            by_number = {str(w["n"]): answers[w["word"]] for w in session["words"]}
+            self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": by_number})
+            result = compute_result(session, by_number, threshold=5)
+            apply_result(self.data, session, result, repo.total_count())
+            status, state = self.request("GET", "/api/state")
+            if index == 3:
+                self.assertEqual(state["stats"]["mastered"], 0)
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["mastered"], 7)
+        self.assertEqual(state["stats"]["new"], 0)
+        new_all = next(s for s in state["sources"] if s["id"] == "new_all")
+        self.assertEqual(new_all["count"], 0)
+
+    def test_word_reset_and_full_reset(self):
+        status, created = self.request("POST", "/api/sessions", {
+            "source": "new_all", "pool": 7, "count": 7, "seed": 7,
+        })
+        session_id = created["session"]["id"]
+        self.request("POST", f"/api/sessions/{session_id}/heard", {"heard_count": 7})
+        session = load_session(self.data, session_id)
+        answers = {str(w["n"]): "不对" for w in session["words"]}
+        self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": answers})
+        repo = WordRepository(self.data)
+        result = compute_result(session, answers, threshold=5)
+        apply_result(self.data, session, result, repo.total_count())
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["wrong"], 7)
+
+        status, data = self.request("POST", "/api/reset", {"scope": "word", "word": "abandon"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["wrong"], 6)
+
+        status, data = self.request("POST", "/api/reset", {"scope": "all"})
+        self.assertEqual(status, 200)
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["stats"]["wrong"], 0)
+        self.assertEqual(state["stats"]["mastered"], 0)
+        self.assertFalse(load_check(self.data, session_id))
+
+
+if __name__ == "__main__":
+    unittest.main()
