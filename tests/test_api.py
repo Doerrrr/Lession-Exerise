@@ -190,6 +190,39 @@ class ApiTests(unittest.TestCase):
         status, wrongbook = self.request("GET", "/api/books?book=wrong")
         self.assertEqual(wrongbook["total"], 1)
 
+    def test_retry_wrong_session(self):
+        status, created = self.request("POST", "/api/sessions", {
+            "source": "new_all", "pool": 7, "count": 3, "seed": 11,
+        })
+        session_id = created["session"]["id"]
+        words = created["session"]["words"]
+        self.request("POST", f"/api/sessions/{session_id}/heard", {"heard_count": 3})
+        answers = {str(word["n"]): "完全错误的答案" for word in words}
+        self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": answers})
+        loaded = load_session(self.data, session_id)
+        repo = WordRepository(self.data)
+        result = compute_result(loaded, answers, threshold=5)
+        apply_result(self.data, loaded, result, repo.total_count())
+
+        status, data = self.request(
+            "POST",
+            f"/api/sessions/{session_id}/retry-wrong",
+            {"mode": "manual", "interval": 4, "repeat": 1},
+        )
+        self.assertEqual(status, 201)
+        retry = data["session"]
+        self.assertEqual(data["wrong_count"], 3)
+        self.assertEqual(retry["count"], 3)
+        self.assertEqual(retry["source"], "retry_wrong")
+        self.assertIn("本轮错题", retry["source_name"])
+        self.assertEqual(retry["mode"], "manual")
+        self.assertEqual([w["word"] for w in retry["words"]], [w["word"] for w in words])
+        self.assertNotIn("translation", retry["words"][0])
+        saved = load_session(self.data, retry["id"])
+        self.assertIsNotNone(saved)
+        self.assertEqual(len(saved["words"]), 3)
+        self.assertTrue(all(w.get("translation") for w in saved["words"]))
+
     def test_wordbook_import_and_custom_source(self):
         content = json.dumps({
             "format": "dictation-wordbook",

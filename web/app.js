@@ -1497,6 +1497,7 @@ function renderResult(report) {
     </div>
     <div class="actions">
       <button class="ghost" type="button" data-replay-session="${escapeHtml(session.id)}">重听本轮</button>
+      <button class="ghost" type="button" data-retry-wrong="${escapeHtml(session.id)}">重听本轮错题</button>
       <button class="ghost" type="button" data-export-packet="${escapeHtml(session.id)}">导出答题包</button>
       <button class="ghost" type="button" data-copy-check="${escapeHtml(session.id)}">复制检查指令</button>
       <button class="ghost" type="button" data-nav="setup">返回听写</button>
@@ -1694,6 +1695,19 @@ async function replaySession(id) {
   }
 }
 
+async function retryWrongWords(id) {
+  try {
+    const data = await api(`/api/sessions/${id}/retry-wrong`, {
+      method: 'POST',
+      body: { mode: state.mode, interval: state.interval, repeat: state.repeat },
+    });
+    toast(`本轮错题 ${data.wrong_count} 个，开始重听`);
+    startSession(data.session);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* settings                                                            */
 /* ------------------------------------------------------------------ */
@@ -1841,6 +1855,8 @@ function bindEvents() {
     if (speak) { speakWord(speak.dataset.speakWord); return; }
     const replay = event.target.closest('[data-replay-session]');
     if (replay) { replaySession(replay.dataset.replaySession); return; }
+    const retry = event.target.closest('[data-retry-wrong]');
+    if (retry) { retryWrongWords(retry.dataset.retryWrong); return; }
     const exportBtn = event.target.closest('[data-export-packet]');
     if (exportBtn) { exportPacket(); return; }
     const copyBtn = event.target.closest('[data-copy-check]');

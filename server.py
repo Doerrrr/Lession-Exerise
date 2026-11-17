@@ -298,6 +298,79 @@ class App:
             "markdown": report_markdown(session, check),
         }
 
+    def retry_wrong(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        session = load_session(self.data_dir, session_id)
+        if not session:
+            raise ApiError(404, "找不到这个场次")
+        check = load_check(self.data_dir, session_id)
+        if not check:
+            raise ApiError(409, "这一轮还没有检查记录，不能生成本轮错题")
+        wrong_items = [
+            item for item in (check.get("items") or [])
+            if item.get("verdict") != "correct"
+        ]
+        if not wrong_items:
+            raise ApiError(409, "本轮没有错题，全部正确。")
+        original_words = {str(word.get("n")): word for word in (session.get("words") or [])}
+        words = []
+        for word in wrong_items:
+            n = str(word.get("n"))
+            original = original_words.get(n, {})
+            text = str(word.get("word") or original.get("word") or "").strip()
+            if not text:
+                continue
+            words.append({
+                "n": len(words) + 1,
+                "word": text,
+                "phonetic": str(word.get("phonetic") or original.get("phonetic") or ""),
+                "translation": str(word.get("expected") or original.get("translation") or ""),
+                "frq": int(original.get("frq") or 0),
+                "bnc": int(original.get("bnc") or 0),
+                "tags": list(original.get("tags") or ["retry"]),
+            })
+        if not words:
+            raise ApiError(409, "本轮错题没有可重听的单词")
+        try:
+            interval = int(payload.get("interval") or session.get("interval") or 6)
+            repeat = int(payload.get("repeat") or session.get("repeat") or 1)
+        except (TypeError, ValueError):
+            raise ApiError(400, "数字参数格式不正确")
+        mode = str(payload.get("mode") or session.get("mode") or "auto")
+        if mode not in {"auto", "manual"}:
+            raise ApiError(400, "mode 只能是 auto / manual")
+        interval = max(1, min(30, interval))
+        repeat = 2 if repeat == 2 else 1
+        source_name = f"本轮错题 · {session.get('source_name') or '听写'}"
+        new_session = {
+            "id": new_session_id(),
+            "created_at": now_iso(),
+            "app_version": __version__,
+            "source": "retry_wrong",
+            "source_name": source_name,
+            "level": "retry",
+            "book": "wrong",
+            "seed": random_seed(),
+            "order": "original",
+            "mode": mode,
+            "interval": interval,
+            "repeat": repeat,
+            "threshold": int(self.settings().get("threshold") or 5),
+            "pool_requested": len(words),
+            "pool_available": len(words),
+            "pool_size": len(words),
+            "count_requested": len(words),
+            "count": len(words),
+            "heard_count": 0,
+            "words": words,
+        }
+        with self.lock:
+            save_session(self.data_dir, new_session)
+        return {
+            "session": self.public_session(new_session),
+            "from_session": session_id,
+            "wrong_count": len(words),
+        }
+
     # ------------------------------------------------------------------
     # AI grading
     # ------------------------------------------------------------------
@@ -640,6 +713,9 @@ def make_handler(app: App):
                     return
                 if sub == "report" and method == "GET":
                     self._json(200, app.report(session_id))
+                    return
+                if sub == "retry-wrong" and method == "POST":
+                    self._json(201, app.retry_wrong(session_id, self._body()))
                     return
                 if sub == "heard" and method == "POST":
                     self._json(200, app.update_heard(session_id, self._body()))

@@ -111,6 +111,7 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 - AI 返回 `uncertain` 时，派生进度按错题处理；提醒用户可人工复核。
 - 相关接口：`PUT /api/ai/settings`、`POST /api/ai/test`、`POST /api/sessions/<id>/ai-check`。
 - 不配置 API Key 也完全可用：导出答题包 + 你运行 CLI 复核。
+- 结果页有「重听本轮错题」：调用 `POST /api/sessions/<id>/retry-wrong`，从该轮检查记录里取 wrong/blank/uncertain 的词新建一轮 `source: retry_wrong` 的会话；不会改动原轮次。
 
 ## 常用测试
 
