@@ -1,6 +1,6 @@
 # 听写本
 
-> 当前版本：v0.3.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.3.1 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
@@ -27,8 +27,8 @@
 
 ## 下载
 
-- **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.0-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.0/Dictation-v0.3.0-win64.exe)
-- **Android APK**（Android 8+，arm64）：[Dictation-v0.3.0-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.0/Dictation-v0.3.0-android.apk)
+- **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.1-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-win64.exe)
+- **Android APK**（Android 8+，arm64）：[Dictation-v0.3.1-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-android.apk)
 
 EXE 首次运行会在 exe 旁边创建 `data/`；如果目录不可写会改用 `%APPDATA%\Dictation\data`。APK 是自签名安装包，需要在系统里允许「安装未知来源应用」；数据保存在应用私有目录。
 
@@ -183,6 +183,8 @@ data/
 - 如果蓝牙耳机在第一个词前还没激活，打开「耳机保活（蓝牙预热）」；应用会用极低音量的静音音频保持音频通道，系统静音也有效。也可以先点「试听语音」预热。
 - 页面切到后台会自动暂停，避免漏词；回到页面后按空格继续。
 - 如果第一次播放提示 `not-allowed`，点「继续」重试，或在设置里换一个英文音色。
+- **Android**：系统 TTS 需要可用的 TTS 引擎和英文数据。如果提示无法播放，打开「设置 → 语音诊断 → 打开系统语音设置」，安装/启用 Google 文字转语音并下载英文语音；也可以先点「试听」。
+- Android 11+ 的清单已声明 `TTS_SERVICE` 可见性；如果仍然失败，通常是系统里没有 TTS 引擎或英文数据，不是应用没有调用。
 
 ## 词库说明
 

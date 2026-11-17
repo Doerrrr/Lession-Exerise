@@ -626,7 +626,7 @@ function setVoiceDiagnostic(message) {
   if (!el) return;
   if (message) { el.textContent = message; return; }
   if (androidTtsAvailable()) {
-    el.textContent = '使用 Android 系统语音（en-US）。';
+    el.textContent = '使用 Android 系统语音。如果无法播放，点「打开系统语音设置」安装/启用英文 TTS 数据。';
     el.classList.remove('warn');
     return;
   }
@@ -650,12 +650,12 @@ function androidTtsAvailable() {
 }
 
 window.__androidTtsCallbacks = window.__androidTtsCallbacks || {};
-window.__androidTtsDone = function (id, ok) {
+window.__androidTtsDone = function (id, ok, reason) {
   const entry = window.__androidTtsCallbacks[id];
   if (!entry) return;
   delete window.__androidTtsCallbacks[id];
   if (entry.timer) clearTimeout(entry.timer);
-  entry.resolve(ok ? { ok: true } : { ok: false, error: 'android-tts' });
+  entry.resolve(ok ? { ok: true } : { ok: false, error: reason || 'android-tts' });
 };
 
 function loadVoices() {
@@ -767,24 +767,26 @@ function warmUpSpeech() {
   }
 }
 
-function speakText(text) {
+function androidSpeakText(text) {
   return new Promise((resolve) => {
-    if (androidTtsAvailable()) {
-      const id = `android-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const timer = setTimeout(() => {
-        delete window.__androidTtsCallbacks[id];
-        resolve({ ok: false, error: 'timeout' });
-      }, Math.max(8000, String(text).length * 1500));
-      window.__androidTtsCallbacks[id] = { resolve, timer };
-      try {
-        window.AndroidTTS.speak(id, String(text), state.rate);
-      } catch (err) {
-        clearTimeout(timer);
-        delete window.__androidTtsCallbacks[id];
-        resolve({ ok: false, error: String(err) });
-      }
-      return;
+    const id = `android-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const timer = setTimeout(() => {
+      delete window.__androidTtsCallbacks[id];
+      resolve({ ok: false, error: 'Android TTS 超时' });
+    }, Math.max(8000, String(text).length * 1500));
+    window.__androidTtsCallbacks[id] = { resolve, timer };
+    try {
+      window.AndroidTTS.speak(id, String(text), state.rate);
+    } catch (err) {
+      clearTimeout(timer);
+      delete window.__androidTtsCallbacks[id];
+      resolve({ ok: false, error: String(err) });
     }
+  });
+}
+
+function webSpeakText(text) {
+  return new Promise((resolve) => {
     if (!('speechSynthesis' in window)) {
       resolve({ ok: false, error: 'unsupported' });
       return;
@@ -792,8 +794,8 @@ function speakText(text) {
     const synth = window.speechSynthesis;
     const utterance = new SpeechSynthesisUtterance(text);
     const voice = selectedVoice();
-    if (voice) utterance.voice = voice;
-    utterance.lang = (voice && voice.lang) || 'en-US';
+    if (voice && voice.voiceURI !== 'android-tts') utterance.voice = voice;
+    utterance.lang = (voice && voice.lang && voice.voiceURI !== 'android-tts') ? voice.lang : 'en-US';
     utterance.rate = state.rate;
     utterance.volume = 1;
     let settled = false;
@@ -820,13 +822,30 @@ function speakText(text) {
   });
 }
 
-function testVoice() {
+async function speakText(text) {
+  if (androidTtsAvailable()) {
+    const native = await androidSpeakText(text);
+    if (native.ok) return native;
+    if ('speechSynthesis' in window) {
+      const fallback = await webSpeakText(text);
+      if (fallback.ok) return fallback;
+      return { ok: false, error: `${native.error}；Web TTS: ${fallback.error}` };
+    }
+    return native;
+  }
+  return webSpeakText(text);
+}
+
+async function testVoice() {
   if (!state.voices.length) {
     toast('没有可用的英文语音，请使用 Edge 或安装英文语音', 'error');
     return;
   }
   startAudioKeepAlive();
-  speakText('abandon');
+  const result = await speakText('abandon');
+  if (!result.ok) {
+    toast(`语音播放失败：${result.error}。可在设置 → 语音诊断里打开系统语音设置。`, 'error');
+  }
 }
 
 function speakWord(word) {
@@ -837,7 +856,9 @@ function speakWord(word) {
     return;
   }
   startAudioKeepAlive();
-  speakText(text);
+  speakText(text).then((result) => {
+    if (!result.ok) toast(`语音播放失败：${result.error}`, 'error');
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1920,6 +1941,17 @@ function bindEvents() {
   });
   $('#test-voice').addEventListener('click', testVoice);
   $('#test-voice-2').addEventListener('click', testVoice);
+  const androidTtsSettings = $('#android-tts-settings');
+  if (androidTtsSettings && androidTtsAvailable()) {
+    androidTtsSettings.hidden = false;
+    androidTtsSettings.addEventListener('click', () => {
+      try {
+        window.AndroidTTS.openSettings();
+      } catch (err) {
+        toast('无法打开系统语音设置，请手动进入：设置 → 系统 → 语言和输入 → 文字转语音', 'error');
+      }
+    });
+  }
   $('#start-btn').addEventListener('click', () => {
     startAudioKeepAlive();
     startNewSession();

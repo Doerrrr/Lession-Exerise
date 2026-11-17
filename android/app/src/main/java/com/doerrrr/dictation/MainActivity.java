@@ -7,9 +7,9 @@ import android.media.AudioAttributes;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
-import android.view.View;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
@@ -27,6 +27,8 @@ import com.chaquo.python.android.AndroidPlatform;
 
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
@@ -34,8 +36,23 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private TextToSpeech tts;
+    private boolean ttsInitialized = false;
     private boolean ttsReady = false;
+    private String ttsError = "";
+    private final List<PendingUtterance> pendingUtterances = new ArrayList<>();
     private ValueCallback<Uri[]> filePathCallback;
+
+    private static class PendingUtterance {
+        final String id;
+        final String text;
+        final float rate;
+
+        PendingUtterance(String id, String text, float rate) {
+            this.id = id;
+            this.text = text;
+            this.rate = rate;
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -131,18 +148,7 @@ public class MainActivity extends Activity {
     }
 
     private void initTts() {
-        tts = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                int language = tts.setLanguage(Locale.US);
-                ttsReady = language != TextToSpeech.LANG_MISSING_DATA
-                        && language != TextToSpeech.LANG_NOT_SUPPORTED;
-                AudioAttributes attrs = new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build();
-                tts.setAudioAttributes(attrs);
-            }
-        });
+        tts = new TextToSpeech(this, this::onTtsInit);
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
             public void onStart(String utteranceId) {
@@ -150,20 +156,124 @@ public class MainActivity extends Activity {
 
             @Override
             public void onDone(String utteranceId) {
-                ttsDone(utteranceId, true);
+                ttsDone(utteranceId, true, "");
             }
 
             @Override
             public void onError(String utteranceId) {
-                ttsDone(utteranceId, false);
+                ttsDone(utteranceId, false, "TTS 播放失败");
+            }
+
+            @Override
+            public void onError(String utteranceId, int errorCode) {
+                ttsDone(utteranceId, false, ttsErrorText(errorCode));
             }
         });
     }
 
-    private void ttsDone(String id, boolean ok) {
+    private void onTtsInit(int status) {
+        runOnUiThread(() -> {
+            ttsInitialized = true;
+            if (status != TextToSpeech.SUCCESS || tts == null) {
+                ttsReady = false;
+                ttsError = "系统文字转语音引擎初始化失败；请安装/启用 TTS 引擎（例如 Google 文字转语音）。";
+                failPending();
+                return;
+            }
+
+            int language = tts.setLanguage(Locale.US);
+            if (isMissingLanguage(language)) {
+                language = tts.setLanguage(Locale.UK);
+            }
+            if (isMissingLanguage(language)) {
+                language = tts.setLanguage(Locale.ENGLISH);
+            }
+            if (isMissingLanguage(language)) {
+                language = tts.setLanguage(Locale.getDefault());
+            }
+            if (isMissingLanguage(language)) {
+                ttsReady = false;
+                ttsError = "系统没有可用的语音数据；请在系统设置 → 文字转语音中安装英文语音。";
+                failPending();
+                return;
+            }
+
+            Locale current = tts.getLanguage();
+            if (current != null && !current.getLanguage().equals("en")) {
+                ttsError = "";
+                // Still allow playback; the engine may pronounce English with its default voice.
+            }
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build();
+            tts.setAudioAttributes(attrs);
+            ttsReady = true;
+            flushPending();
+        });
+    }
+
+    private static boolean isMissingLanguage(int result) {
+        return result == TextToSpeech.LANG_MISSING_DATA
+                || result == TextToSpeech.LANG_NOT_SUPPORTED;
+    }
+
+    private void failPending() {
+        for (PendingUtterance item : pendingUtterances) {
+            ttsDone(item.id, false, ttsError);
+        }
+        pendingUtterances.clear();
+    }
+
+    private void flushPending() {
+        for (PendingUtterance item : pendingUtterances) {
+            doSpeak(item.id, item.text, item.rate);
+        }
+        pendingUtterances.clear();
+    }
+
+    private void doSpeak(String id, String text, float rate) {
+        if (tts == null) {
+            ttsDone(id, false, "TTS 未初始化");
+            return;
+        }
+        if (!ttsReady) {
+            ttsDone(id, false, ttsError.isEmpty() ? "TTS 不可用" : ttsError);
+            return;
+        }
+        try {
+            tts.setSpeechRate(Math.max(0.6f, Math.min(1.2f, rate)));
+            int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
+            if (result != TextToSpeech.SUCCESS) {
+                ttsDone(id, false, "TTS 启动失败（code " + result + "）");
+            }
+        } catch (Exception exc) {
+            ttsDone(id, false, "TTS 异常：" + exc.getMessage());
+        }
+    }
+
+    private static String ttsErrorText(int errorCode) {
+        switch (errorCode) {
+            case TextToSpeech.ERROR_OUTPUT:
+                return "音频输出不可用；请检查耳机/音量/蓝牙连接。";
+            case TextToSpeech.ERROR_NETWORK:
+                return "语音数据需要网络；请联网后重试。";
+            case TextToSpeech.ERROR_NETWORK_TIMEOUT:
+                return "语音合成网络超时。";
+            case TextToSpeech.ERROR_NOT_INSTALLED_YET:
+                return "语音数据还没安装完成；请到系统文字转语音设置安装英文数据。";
+            case TextToSpeech.ERROR_SYNTHESIS:
+                return "语音合成失败；请换一个 TTS 引擎或安装英文数据。";
+            default:
+                return "TTS 播放失败（code " + errorCode + "）";
+        }
+    }
+
+    private void ttsDone(String id, boolean ok, String reason) {
         runOnUiThread(() -> {
             if (webView == null) return;
-            String js = "window.__androidTtsDone(" + JSONObject.quote(id) + "," + ok + ")";
+            String js = "window.__androidTtsDone(" + JSONObject.quote(id) + "," + ok + ","
+                    + JSONObject.quote(reason == null ? "" : reason) + ")";
             webView.evaluateJavascript(js, null);
         });
     }
@@ -208,6 +318,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        pendingUtterances.clear();
         if (tts != null) {
             tts.stop();
             tts.shutdown();
@@ -224,15 +335,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void speak(String id, String text, float rate) {
             runOnUiThread(() -> {
-                if (tts == null || !ttsReady) {
-                    ttsDone(id, false);
+                if (!ttsInitialized) {
+                    pendingUtterances.add(new PendingUtterance(id, text, rate));
                     return;
                 }
-                tts.setSpeechRate(Math.max(0.6f, Math.min(1.2f, rate)));
-                int result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
-                if (result != TextToSpeech.SUCCESS) {
-                    ttsDone(id, false);
-                }
+                doSpeak(id, text, rate);
             });
         }
 
@@ -240,6 +347,20 @@ public class MainActivity extends Activity {
         public void stop() {
             runOnUiThread(() -> {
                 if (tts != null) tts.stop();
+            });
+        }
+
+        @JavascriptInterface
+        public void openSettings() {
+            runOnUiThread(() -> {
+                try {
+                    startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+                } catch (Exception exc) {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_SETTINGS));
+                    } catch (Exception ignored) {
+                    }
+                }
             });
         }
     }
