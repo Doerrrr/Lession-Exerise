@@ -66,8 +66,8 @@ def build_sheet(
     lines.extend([
         "---",
         "",
-        f"检查方式：在对话里说「检查 {session.get('id', '')}」，或运行：",
-        f"python tools/check.py --session {session.get('id', '')}",
+        "检查方式：在应用里点「AI 判卷」（需先在设置里配置 DeepSeek API Key）。",
+        "提示：本应用不提供本地判卷；答题纸可以保存/导出作为备份。",
         "",
     ])
     return "\n".join(lines)

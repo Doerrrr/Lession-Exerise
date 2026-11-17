@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dictation import ai  # noqa: E402
-from dictation.checking import apply_result, compute_result  # noqa: E402
+from dictation.checking import apply_result, summarize_items  # noqa: E402
 from dictation.store import load_check, load_session  # noqa: E402
 from dictation.words import WordRepository  # noqa: E402
 from server import App, make_handler  # noqa: E402
@@ -60,6 +60,44 @@ class ApiTests(unittest.TestCase):
             if "application/json" in content_type:
                 return response.status, json.loads(raw)
             return response.status, raw
+
+    def apply_manual(self, session, verdicts, total_words=None):
+        if isinstance(verdicts, str):
+            verdicts = {str(w["n"]): verdicts for w in session["words"]}
+        items = []
+        for word in session["words"]:
+            n = str(word["n"])
+            verdict = verdicts.get(n, "wrong")
+            items.append({
+                "n": word["n"],
+                "word": word["word"],
+                "phonetic": word.get("phonetic", ""),
+                "answer": "",
+                "verdict": verdict,
+                "score": 1.0 if verdict == "correct" else (0.5 if verdict == "uncertain" else 0.0),
+                "matched": "",
+                "reason": "test",
+                "expected": word.get("translation", ""),
+            })
+        result = {
+            "session_id": session["id"],
+            "session_created_at": session.get("created_at"),
+            "seed": session.get("seed"),
+            "source_name": session.get("source_name"),
+            "threshold": 5,
+            "heard": len(items),
+            "items": items,
+            "summary": summarize_items(items),
+            "warnings": [],
+            "engine": "deepseek",
+            "model": "test",
+        }
+        return apply_result(
+            self.data,
+            session,
+            result,
+            total_words if total_words is not None else self.app.words.catalog_total_count(),
+        )
 
     # ------------------------------------------------------------------
     def test_state_and_static(self):
@@ -122,9 +160,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(len(detail["answers"]), 7)
 
         session = load_session(self.data, session_id)
-        repo = WordRepository(self.data)
-        result = compute_result(session, by_number, threshold=5)
-        apply_result(self.data, session, result, repo.total_count())
+        self.apply_manual(session, "correct")
         status, report = self.request("GET", f"/api/sessions/{session_id}/report")
         self.assertEqual(status, 200)
         self.assertEqual(report["check"]["summary"]["correct"], 7)
@@ -200,9 +236,7 @@ class ApiTests(unittest.TestCase):
         answers = {str(word["n"]): "完全错误的答案" for word in words}
         self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": answers})
         loaded = load_session(self.data, session_id)
-        repo = WordRepository(self.data)
-        result = compute_result(loaded, answers, threshold=5)
-        apply_result(self.data, loaded, result, repo.total_count())
+        self.apply_manual(loaded, "wrong")
 
         status, data = self.request(
             "POST",
@@ -263,9 +297,7 @@ class ApiTests(unittest.TestCase):
         answers = {str(w["n"]): "错误答案" for w in words}
         self.request("POST", f"/api/sessions/{session['id']}/answers", {"answers": answers})
         loaded = load_session(self.data, session["id"])
-        repo = WordRepository(self.data)
-        result = compute_result(loaded, answers, threshold=5)
-        apply_result(self.data, loaded, result, repo.catalog_total_count())
+        self.apply_manual(loaded, "wrong")
         status, state = self.request("GET", "/api/state")
         wrong_source = next(s for s in state["sources"] if s["id"] == "wrong_all")
         self.assertEqual(wrong_source["count"], 2)
@@ -285,7 +317,6 @@ class ApiTests(unittest.TestCase):
             "abandon": "放弃", "ability": "能力", "apple": "苹果",
             "banana": "香蕉", "car": "汽车", "dog": "狗", "zebra": "斑马",
         }
-        repo = WordRepository(self.data)
         for index in range(5):
             status, created = self.request("POST", "/api/sessions", {
                 "source": "new_all", "pool": 7, "count": 7, "seed": 1000 + index,
@@ -296,8 +327,7 @@ class ApiTests(unittest.TestCase):
             session = load_session(self.data, session_id)
             by_number = {str(w["n"]): answers[w["word"]] for w in session["words"]}
             self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": by_number})
-            result = compute_result(session, by_number, threshold=5)
-            apply_result(self.data, session, result, repo.total_count())
+            self.apply_manual(session, "correct")
             status, state = self.request("GET", "/api/state")
             if index == 3:
                 self.assertEqual(state["stats"]["mastered"], 0)
@@ -316,9 +346,7 @@ class ApiTests(unittest.TestCase):
         session = load_session(self.data, session_id)
         answers = {str(w["n"]): "不对" for w in session["words"]}
         self.request("POST", f"/api/sessions/{session_id}/answers", {"answers": answers})
-        repo = WordRepository(self.data)
-        result = compute_result(session, answers, threshold=5)
-        apply_result(self.data, session, result, repo.total_count())
+        self.apply_manual(session, "wrong")
         status, state = self.request("GET", "/api/state")
         self.assertEqual(state["stats"]["wrong"], 7)
 

@@ -46,6 +46,7 @@ const state = {
   rate: 1,
   voiceURI: '',
   showWord: false,
+  keepAudioAlive: true,
   phase: 'idle',
   gapLeft: 0,
   gapTimer: null,
@@ -473,6 +474,7 @@ function savePlaybackSettings() {
     rate: state.rate,
     voiceURI: state.voiceURI,
     showWord: state.showWord,
+    keepAudioAlive: state.keepAudioAlive,
     source: $('#source') ? $('#source').value : '',
   };
   localStorage.setItem('dictation.playback', JSON.stringify(payload));
@@ -497,6 +499,9 @@ function restorePlaybackSettings() {
   state.voiceURI = saved.voiceURI || '';
   state.showWord = Boolean(saved.showWord);
   $('#show-word').checked = state.showWord;
+  state.keepAudioAlive = saved.keepAudioAlive !== false;
+  const keepAudio = $('#keep-audio');
+  if (keepAudio) keepAudio.checked = state.keepAudioAlive;
   updateIntervalLabel();
   updateRateLabel();
 }
@@ -620,6 +625,11 @@ function setVoiceDiagnostic(message) {
   const el = $('#voice-diagnostic');
   if (!el) return;
   if (message) { el.textContent = message; return; }
+  if (androidTtsAvailable()) {
+    el.textContent = '使用 Android 系统语音（en-US）。';
+    el.classList.remove('warn');
+    return;
+  }
   if (!('speechSynthesis' in window)) {
     el.textContent = '这个浏览器不支持语音合成，请使用 Edge 或 Chrome。';
     el.classList.add('warn');
@@ -635,9 +645,30 @@ function setVoiceDiagnostic(message) {
   el.classList.remove('warn');
 }
 
+function androidTtsAvailable() {
+  return typeof window.AndroidTTS !== 'undefined' && window.AndroidTTS;
+}
+
+window.__androidTtsCallbacks = window.__androidTtsCallbacks || {};
+window.__androidTtsDone = function (id, ok) {
+  const entry = window.__androidTtsCallbacks[id];
+  if (!entry) return;
+  delete window.__androidTtsCallbacks[id];
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.resolve(ok ? { ok: true } : { ok: false, error: 'android-tts' });
+};
+
 function loadVoices() {
   const select = $('#voice');
   if (!select) return;
+  if (androidTtsAvailable()) {
+    state.voices = [{ name: 'Android 系统语音', lang: 'en-US', voiceURI: 'android-tts' }];
+    select.innerHTML = '<option value="android-tts">Android 系统语音 (en-US)</option>';
+    select.value = 'android-tts';
+    state.voiceURI = 'android-tts';
+    setVoiceDiagnostic();
+    return;
+  }
   if (!('speechSynthesis' in window)) {
     select.innerHTML = '<option value="">不支持语音</option>';
     state.voices = [];
@@ -679,8 +710,81 @@ function selectedVoice() {
   return state.voices.find((voice) => voice.voiceURI === state.voiceURI) || state.voices[0];
 }
 
+/* Keep the system audio route (especially Bluetooth headphones) awake with an
+   inaudible low-frequency oscillator.  Android's TTS and Chrome's TTS both
+   benefit: the first word no longer has to wake the headset by itself. */
+let audioKeepAlive = null;
+
+function startAudioKeepAlive() {
+  if (!state.keepAudioAlive) return;
+  try {
+    if (!audioKeepAlive) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const gain = ctx.createGain();
+      gain.gain.value = 0.0001;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = 40;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      audioKeepAlive = { ctx, gain, osc };
+    }
+    if (audioKeepAlive.ctx.state === 'suspended') {
+      audioKeepAlive.ctx.resume().catch(() => {});
+    }
+  } catch (err) {
+    /* AudioContext may be unavailable in some WebViews; TTS still works. */
+  }
+}
+
+function stopAudioKeepAlive() {
+  if (!audioKeepAlive) return;
+  try {
+    if (audioKeepAlive.ctx.state === 'running') {
+      audioKeepAlive.ctx.suspend().catch(() => {});
+    }
+  } catch (err) {
+    /* ignore */
+  }
+}
+
+function warmUpSpeech() {
+  if (androidTtsAvailable()) return;
+  if (!('speechSynthesis' in window)) return;
+  try {
+    const utterance = new SpeechSynthesisUtterance(' ');
+    const voice = selectedVoice();
+    if (voice) utterance.voice = voice;
+    utterance.lang = (voice && voice.lang) || 'en-US';
+    utterance.volume = 0.01;
+    utterance.rate = 2;
+    window.speechSynthesis.speak(utterance);
+  } catch (err) {
+    /* ignore */
+  }
+}
+
 function speakText(text) {
   return new Promise((resolve) => {
+    if (androidTtsAvailable()) {
+      const id = `android-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const timer = setTimeout(() => {
+        delete window.__androidTtsCallbacks[id];
+        resolve({ ok: false, error: 'timeout' });
+      }, Math.max(8000, String(text).length * 1500));
+      window.__androidTtsCallbacks[id] = { resolve, timer };
+      try {
+        window.AndroidTTS.speak(id, String(text), state.rate);
+      } catch (err) {
+        clearTimeout(timer);
+        delete window.__androidTtsCallbacks[id];
+        resolve({ ok: false, error: String(err) });
+      }
+      return;
+    }
     if (!('speechSynthesis' in window)) {
       resolve({ ok: false, error: 'unsupported' });
       return;
@@ -721,6 +825,7 @@ function testVoice() {
     toast('没有可用的英文语音，请使用 Edge 或安装英文语音', 'error');
     return;
   }
+  startAudioKeepAlive();
   speakText('abandon');
 }
 
@@ -731,6 +836,7 @@ function speakWord(word) {
     toast('没有可用的英文语音，请使用 Edge 或安装英文语音', 'error');
     return;
   }
+  startAudioKeepAlive();
   speakText(text);
 }
 
@@ -745,6 +851,9 @@ function clearPlaybackTimers() {
 }
 
 function cancelSpeech() {
+  if (androidTtsAvailable()) {
+    try { window.AndroidTTS.stop(); } catch (err) { /* ignore */ }
+  }
   if ('speechSynthesis' in window) {
     try { window.speechSynthesis.cancel(); } catch (err) { /* ignore */ }
   }
@@ -754,6 +863,7 @@ function startSession(session) {
   state.runToken += 1;
   clearPlaybackTimers();
   cancelSpeech();
+  startAudioKeepAlive();
   state.session = session;
   state.words = session.words || [];
   state.index = 0;
@@ -780,6 +890,7 @@ function startSession(session) {
     return;
   }
   startCountdown();
+  warmUpSpeech();
   setTimeout(focusSessionAnswer, 200);
 }
 
@@ -1471,7 +1582,13 @@ function renderResult(report) {
   }).join('');
   const engineLine = check.engine === 'deepseek'
     ? `DeepSeek · ${escapeHtml(check.model || 'deepseek-chat')}`
-    : '本地/助手检查';
+    : '历史判卷记录';
+  const usage = check.usage || {};
+  const cacheHit = Number(usage.prompt_cache_hit_tokens || 0);
+  const cacheMiss = Number(usage.prompt_cache_miss_tokens || 0);
+  const cacheLine = (cacheHit || cacheMiss)
+    ? ` · 缓存命中 ${cacheHit} / 未命中 ${cacheMiss} tokens`
+    : '';
   panel.innerHTML = `
     <div class="card-head">
       <div>
@@ -1480,7 +1597,7 @@ function renderResult(report) {
       </div>
       <span class="tag">已检查</span>
     </div>
-    <p class="result-ai-line">判卷引擎：${engineLine}</p>
+    <p class="result-ai-line">判卷引擎：${engineLine}${cacheLine}</p>
     <div class="result-summary">
       <div class="result-stat"><b>${summary.correct ?? 0}</b><span>正确</span></div>
       <div class="result-stat"><b>${summary.wrong ?? 0}</b><span>错误</span></div>
@@ -1499,7 +1616,6 @@ function renderResult(report) {
       <button class="ghost" type="button" data-replay-session="${escapeHtml(session.id)}">重听本轮</button>
       <button class="ghost" type="button" data-retry-wrong="${escapeHtml(session.id)}">重听本轮错题</button>
       <button class="ghost" type="button" data-export-packet="${escapeHtml(session.id)}">导出答题包</button>
-      <button class="ghost" type="button" data-copy-check="${escapeHtml(session.id)}">复制检查指令</button>
       <button class="ghost" type="button" data-nav="setup">返回听写</button>
     </div>
   `;
@@ -1684,6 +1800,7 @@ function renderHistory() {
 
 async function replaySession(id) {
   try {
+    startAudioKeepAlive();
     if (isSessionBusy()) {
       if (!window.confirm('正在听写，重新开始另一轮会停止当前播放。继续吗？')) return;
       stopPlayback();
@@ -1697,6 +1814,7 @@ async function replaySession(id) {
 
 async function retryWrongWords(id) {
   try {
+    startAudioKeepAlive();
     const data = await api(`/api/sessions/${id}/retry-wrong`, {
       method: 'POST',
       body: { mode: state.mode, interval: state.interval, repeat: state.repeat },
@@ -1785,6 +1903,15 @@ function bindEvents() {
     state.showWord = $('#show-word').checked;
     savePlaybackSettings();
   });
+  const keepAudio = $('#keep-audio');
+  if (keepAudio) {
+    keepAudio.addEventListener('change', () => {
+      state.keepAudioAlive = keepAudio.checked;
+      if (state.keepAudioAlive) startAudioKeepAlive();
+      else stopAudioKeepAlive();
+      savePlaybackSettings();
+    });
+  }
   $('#voice').addEventListener('change', () => {
     state.voiceURI = $('#voice').value;
     $('#voice').title = ($('#voice').selectedOptions[0] || {}).textContent || '';
@@ -1793,7 +1920,10 @@ function bindEvents() {
   });
   $('#test-voice').addEventListener('click', testVoice);
   $('#test-voice-2').addEventListener('click', testVoice);
-  $('#start-btn').addEventListener('click', startNewSession);
+  $('#start-btn').addEventListener('click', () => {
+    startAudioKeepAlive();
+    startNewSession();
+  });
   $('#refresh-state').addEventListener('click', async () => {
     await loadState();
     toast('已刷新');
@@ -1859,8 +1989,6 @@ function bindEvents() {
     if (retry) { retryWrongWords(retry.dataset.retryWrong); return; }
     const exportBtn = event.target.closest('[data-export-packet]');
     if (exportBtn) { exportPacket(); return; }
-    const copyBtn = event.target.closest('[data-copy-check]');
-    if (copyBtn) copyText(`检查 ${copyBtn.dataset.copyCheck}`);
   });
 
   $('#batch-apply').addEventListener('click', applyBatchAnswers);

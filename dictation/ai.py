@@ -15,7 +15,6 @@ from typing import Any
 
 from .checking import summarize_items
 from .config import now_iso
-from .matching import match_answer
 from .sheet import effective_heard
 from .store import load_settings, read_json, write_json
 
@@ -31,9 +30,25 @@ SYSTEM_PROMPT = """你是一位严格、公平的英语单词听写批改老师�
 3. 答案为空，判 blank。
 4. 意思错误，判 wrong。
 5. 实在无法判断，判 uncertain，并在 reason 说明。
+
+固定评分细则（每次请求都相同，先读规则再读题目）：
+- reference 里的词性标记（n. / vt. / vi. / adj. / adv. / prep. 等）、方括号标签（如 [经]）、编号和分隔符都忽略，只比较中文义项。
+- reference 有多个义项时，学生答出其中任意一个义项即 correct，不要求写全。
+- 学生写的是近义词、同义词、常见口语表达，且在该词义范围内，判 correct。
+- 一个中文词里有明显错别字，但读音/字形接近且意思正确，判 correct；完全改变词义的错别字判 wrong。
+- 学生答案与 reference 的义项只有字面相似、但意思明显不同，判 wrong；不要为了宽容而误判 correct。
+- 学生答案包含额外解释但核心义项正确，判 correct；核心义项错误，判 wrong。
+- answer 为空字符串、只有标点或只有空白，判 blank。
+- 无法确定时判 uncertain，不要猜；reason 写清楚原因。
+- 只判给定的题，不新增题号，不修改 word 和 reference。
+
+输出示例（仅说明格式，不要把这些示例当成题目）：
+输入：{"items":[{"n":1,"word":"abandon","reference":"vt. 放弃；抛弃","answer":"放弃"},{"n":2,"word":"ability","reference":"n. 能力；才干","answer":"苹果"}]}
+输出：{"results":[{"n":1,"verdict":"correct","matched":"放弃","reason":"命中义项"},{"n":2,"verdict":"wrong","matched":"","reason":"意思不符"}]}
+
 只返回一个 JSON 对象，不要 markdown 代码块，不要额外文字。格式：
 {"results":[{"n":1,"verdict":"correct","matched":"命中的义项","reason":"不超过20字"}]}
-results 必须覆盖输入的每一题；verdict 只能是 correct、wrong、blank、uncertain。"""
+results 必须覆盖输入的每一题；verdict 只能是 correct、wrong、blank、uncertain。输入是纯 JSON，直接按固定规则判分。"""
 
 VERDICT_ALIASES = {
     "correct": "correct", "正确": "correct", "对": "correct", "right": "correct",
@@ -136,6 +151,7 @@ def call_chat(
     temperature: float = 0,
     response_format: bool = True,
     timeout: int = 120,
+    usage: dict[str, Any] | None = None,
 ) -> str:
     if not api_key:
         raise AiError("还没有配置 DeepSeek API Key，请先在设置里填写。")
@@ -179,6 +195,8 @@ def call_chat(
         content = data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise AiError("DeepSeek 返回格式无法解析") from exc
+    if usage is not None and isinstance(data.get("usage"), dict):
+        usage.update(data["usage"])
     if not isinstance(content, str) or not content.strip():
         raise AiError("DeepSeek 返回内容为空")
     return content
@@ -222,7 +240,7 @@ def build_grade_request(
             "answer": str(answers.get(n, "") or "").strip(),
         })
     user_content = json.dumps(
-        {"source": session.get("source_name", ""), "items": items},
+        {"items": items},
         ensure_ascii=False,
     )
     return (
@@ -295,6 +313,7 @@ def grade_session(
     if not settings["api_key"]:
         raise AiError("还没有配置 DeepSeek API Key，请先在设置里填写。")
     messages, request_items = build_grade_request(session, answers)
+    usage: dict[str, Any] = {}
     content = call_chat(
         settings["api_key"],
         settings["base_url"],
@@ -303,6 +322,7 @@ def grade_session(
         max_tokens=4096,
         response_format=True,
         timeout=120,
+        usage=usage,
     )
     ai_results = parse_ai_results(content)
     if threshold is None:
@@ -321,8 +341,7 @@ def grade_session(
             reason = ai["reason"]
         else:
             missing.append(n)
-            local = match_answer(answer, str(item.get("reference") or ""))
-            verdict, matched, reason = local.verdict, local.matched, "AI 未返回本题，使用本地匹配"
+            continue
         score = 1.0 if verdict == "correct" else (0.5 if verdict == "uncertain" else 0.0)
         items.append({
             "n": item["n"],
@@ -334,19 +353,20 @@ def grade_session(
             "matched": matched,
             "reason": reason,
             "expected": item["reference"],
-            "engine": "ai" if ai is not None and answer else "local",
+            "engine": "ai" if ai is not None and answer else "blank",
         })
+    if missing:
+        raise AiError(
+            "AI 判卷没有返回以下题号，请重试："
+            + "、".join(missing[:20])
+            + ("…" if len(missing) > 20 else "")
+        )
     # Fill phonetics from the session word records (request items don't carry
     # them to keep the prompt compact).
     phonetic_by_n = {str(w.get("n")): w.get("phonetic", "") for w in session.get("words") or []}
     for item in items:
         item["phonetic"] = phonetic_by_n.get(str(item["n"]), "")
     summary = summarize_items(items)
-    warnings: list[str] = []
-    if missing:
-        warnings.append(
-            "AI 没有返回以下题号，已改用本地匹配：" + "、".join(missing[:20])
-        )
     return {
         "session_id": session["id"],
         "session_created_at": session.get("created_at"),
@@ -356,8 +376,9 @@ def grade_session(
         "heard": effective_heard(session),
         "items": items,
         "summary": summary,
-        "warnings": warnings,
+        "warnings": [],
         "engine": "deepseek",
+        "usage": usage,
         "model": settings["model"],
         "base_url": settings["base_url"],
         "graded_at": now_iso(),

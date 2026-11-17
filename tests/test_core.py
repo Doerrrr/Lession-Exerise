@@ -15,11 +15,9 @@ from dictation.checking import (  # noqa: E402
     apply_result,
     book_counts,
     build_progress,
-    compute_result,
     has_check,
+    summarize_items,
 )
-from dictation.config import DEFAULT_THRESHOLD  # noqa: E402
-from dictation.matching import match_answer, split_senses  # noqa: E402
 from dictation.progress import derive  # noqa: E402
 from dictation.sampling import sample_words, sort_by_frequency, take_pool  # noqa: E402
 from dictation.sheet import build_sheet, parse_sheet  # noqa: E402
@@ -83,29 +81,35 @@ class SamplingTests(unittest.TestCase):
             sample_words(fixture_words(), 99, seed=1)
 
 
-class MatchingTests(unittest.TestCase):
-    def test_exact_and_synonym(self):
-        self.assertEqual(match_answer("放弃", "vt. 放弃, 抛弃, 遗弃").verdict, "correct")
-        self.assertEqual(match_answer("抛弃", "vt. 放弃, 抛弃, 遗弃").verdict, "correct")
-        self.assertEqual(match_answer("放弃；抛弃", "vt. 放弃, 抛弃, 遗弃").verdict, "correct")
-
-    def test_punctuation_pos_and_labels(self):
-        self.assertEqual(match_answer(" 放 弃 ", "vt. 放弃, 抛弃").verdict, "correct")
-        self.assertEqual(match_answer("n. 能力", "n. 能力, 才干").verdict, "correct")
-        self.assertEqual(match_answer("才能", "n. 能力, 才干\n[经] 能力, 才能").verdict, "correct")
-        self.assertEqual(match_answer("苹果", "n. 苹果; 苹果树").verdict, "correct")
-
-    def test_wrong_blank_uncertain(self):
-        self.assertEqual(match_answer("香蕉", "n. 苹果; 苹果树").verdict, "wrong")
-        self.assertEqual(match_answer("", "n. 苹果").verdict, "blank")
-        self.assertEqual(match_answer("放弁", "vt. 放弃, 抛弃").verdict, "uncertain")
-        self.assertEqual(match_answer("才能", "n. 能力, 才干").verdict, "uncertain")
-
-    def test_split_senses(self):
-        senses = split_senses("n. 能力, 才干\n[经] 能力, 才能")
-        self.assertIn("能力", senses)
-        self.assertIn("才干", senses)
-        self.assertIn("才能", senses)
+def manual_result(session: dict, verdicts: dict[str, str], threshold: int = 5) -> dict:
+    items = []
+    for word in session.get("words") or []:
+        n = str(word.get("n"))
+        verdict = verdicts.get(n, "wrong")
+        items.append({
+            "n": word.get("n"),
+            "word": word.get("word", ""),
+            "phonetic": word.get("phonetic", ""),
+            "answer": "",
+            "verdict": verdict,
+            "score": 1.0 if verdict == "correct" else (0.5 if verdict == "uncertain" else 0.0),
+            "matched": "",
+            "reason": "test",
+            "expected": word.get("translation", ""),
+        })
+    return {
+        "session_id": session["id"],
+        "session_created_at": session.get("created_at"),
+        "seed": session.get("seed"),
+        "source_name": session.get("source_name"),
+        "threshold": threshold,
+        "heard": len(items),
+        "items": items,
+        "summary": summarize_items(items),
+        "warnings": [],
+        "engine": "deepseek",
+        "model": "test",
+    }
 
 
 class ProgressTests(unittest.TestCase):
@@ -232,9 +236,7 @@ class ApplyTests(unittest.TestCase):
             "words": words,
         }
         save_session(data, session)
-        answers = {str(i): "随便" for i in range(1, len(words) + 1)}
-        answers["1"] = "放弃"  # correct for abandon
-        result = compute_result(session, answers, threshold=1)
+        result = manual_result(session, {"1": "correct"}, threshold=1)
         applied = apply_result(data, session, result, repo.total_count())
         self.assertTrue(has_check(data, session["id"]))
         self.assertEqual(applied["summary"]["correct"], 1)
@@ -248,11 +250,12 @@ class ApplyTests(unittest.TestCase):
         counts = book_counts(progress, repo.total_count())
         self.assertEqual(counts["wrong"], len(words) - 1)
 
-        # Re-check with everything correct: abandon should not double count.
-        all_correct = {str(i): "放弃" for i in range(1, len(words) + 1)}
-        # Only the first word is guaranteed correct; make others blank/wrong is
-        # fine, what matters is that the old result is replaced.
-        result2 = compute_result(session, all_correct, threshold=1)
+        # Re-check with everything correct: the old result is replaced.
+        result2 = manual_result(
+            session,
+            {str(i): "correct" for i in range(1, len(words) + 1)},
+            threshold=1,
+        )
         apply_result(data, session, result2, repo.total_count())
         progress2 = build_progress(data, threshold=1)
         self.assertEqual(progress2.state("abandon").total_seen, 1)

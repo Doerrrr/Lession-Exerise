@@ -1,0 +1,66 @@
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("com.chaquo.python")
+}
+
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file("keystore.properties")
+if (keystoreFile.exists()) {
+    keystoreFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace = "com.doerrrr.dictation"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.doerrrr.dictation"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.3.0"
+        ndk {
+            abiFilters += ["arm64-v8a", "x86_64"]
+        }
+        python {
+            buildPython "C:/Users/Doer/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/python.exe"
+            version "3.10"
+            pip {
+                // No extra Python packages: the app uses the standard library only.
+            }
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps.containsKey("storeFile")) {
+                storeFile = rootProject.file(keystoreProps["storeFile"])
+                storePassword = keystoreProps["storePassword"]
+                keyAlias = keystoreProps["keyAlias"]
+                keyPassword = keystoreProps["keyPassword"]
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled = false
+            if (keystoreProps.containsKey("storeFile")) {
+                signingConfig = signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}

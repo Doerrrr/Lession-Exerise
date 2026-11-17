@@ -1,6 +1,6 @@
 # 听写本
 
-> 当前版本：v0.2.1 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.3.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
@@ -11,8 +11,8 @@
 - 自动连读或「读完就停、按键下一个」
 - 连续答对 5 次自动移出新词本；错词留在错题本
 - 检查结果可以每词发音，也可以一键重听本轮错题
-- 答题纸保存成 Markdown，交给 AI 检查并自动更新词本
-- 可选接入 DeepSeek API 直接判卷
+- 所有判卷都通过 DeepSeek / 兼容 API，不提供本地判卷
+- 答题纸可以保存成 Markdown 作为备份
 - 纯本地数据，不需要登录
 
 ## 截图
@@ -21,13 +21,18 @@
 
 ![答题页：AI 判卷、批量填写、导出答题包](docs/answers-ai.png)
 
-![检查结果：每个单词都可以点小喇叭听](docs/result-listen.png)
-
 ![重听本轮错题：只重听这一轮答错的词](docs/retry-wrong.png)
 
 ![导入自定义词本](docs/settings-wordbooks.png)
 
-## 快速开始
+## 下载
+
+- **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.0-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.0/Dictation-v0.3.0-win64.exe)
+- **Android APK**（Android 8+，arm64）：[Dictation-v0.3.0-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.0/Dictation-v0.3.0-android.apk)
+
+EXE 首次运行会在 exe 旁边创建 `data/`；如果目录不可写会改用 `%APPDATA%\Dictation\data`。APK 是自签名安装包，需要在系统里允许「安装未知来源应用」；数据保存在应用私有目录。
+
+## 快速开始（源码运行）
 
 1. Windows 双击 `start.bat`；其他系统运行 `python server.py --open`。
 2. 浏览器会自动打开 `http://127.0.0.1:8765`（端口被占用时会自动换一个，以窗口里打印的地址为准）。
@@ -49,10 +54,11 @@
      1. 放弃
      2. 能力
      ```
-   - 有 DeepSeek API Key 时，点「AI 判卷」直接判分并更新词本。
-   - 没有 Key 时，点「保存答题纸」/「导出答题包」，把答题包交给 AI 助手检查。
-4. **检查**：答题包包含场次 ID、种子和你的答案；检查后错词会写进错题本。
+   - 先在「设置」里配置 DeepSeek API Key；点「AI 判卷」直接判分并更新词本。
+   - 所有判卷都走 API；没有 Key 时不能判卷，可以保存/导出答题包作为备份。
+4. **检查**：AI 判卷会使用本轮的单词、参考释义和你的答案；判完后错词会写进错题本。
    - 结果页每个单词都可以点小喇叭听；也可以点「重听本轮错题」只重听这一轮答错/未作答的词（会新建一轮专门的错题轮次）。
+   - 不提供本地判卷 CLI，也不需要在对话里发「检查 ID」；所有判卷都在应用里完成。
 5. **下一轮**：刷新页面，新词本/错题本数量已更新；错词可以直接用「错题本」来源再听。
 
 ## 导入自定义词本
@@ -127,38 +133,18 @@ data/sessions/<场次ID>-answers.md
    你的答案：能力
 ```
 
-答题页的「导出答题包」会导出带场次 ID、种子和你的答案的 Markdown，方便交给 AI 助手，或自己用 CLI 检查。
+答题页的「导出答题包」会导出带场次 ID、种子和你的答案的 Markdown，作为备份；它不参与判卷。
 
-如果使用支持项目 `AGENTS.md` 的 AI 助手（例如 DSH），可以直接把答题包交给它，并说：
+**所有判卷都通过 API**：在答题页点「AI 判卷」，应用会调用 DeepSeek / 兼容接口，结果写入 `data/checks/`。
 
-```
-检查 <场次ID>
-```
-
-也可以自己运行检查命令：
-
-```bat
-python tools/check.py --session <场次ID>
-python tools/check.py --session <场次ID> --accept-uncertain=wrong --allow-blank --apply
-```
-
-常用选项：
-
-```bat
-python tools/check.py --pending                    # 列出所有待检查答题纸
-python tools/check.py --seed 483920                # 按种子找最近一轮
-python tools/check.py --session <id> --all         # 显示全部题目
-python tools/check.py --session <id> --override 7=correct --apply
-```
-
-- 检查不会在页面里偷偷进行，必须由命令或 AI 写入 `data/checks/` 后进度才变化。
-- 同一轮重复检查会覆盖旧检查记录，不会重复累计连对。
-- 空白太多时 `--apply` 需要 `--allow-blank`，避免误清进度。
-- 相似但不完全匹配的答案会标成「待确认」，由助手复核后决定对错。
+- 不提供本地判卷，也没有 `tools/check.py` 之类的本地检查命令。
+- 没有 API Key 时无法判卷；请先在设置里配置。
+- 同一轮重复 AI 判卷会覆盖旧检查记录，不会重复累计连对。
+- AI 判错或返回 `uncertain` 时，可以人工核对后重新点 AI 判卷，或用「重新学习」修正进度；不要用本地规则改判。
 
 ## AI 判卷（DeepSeek）
 
-不想交给 AI 助手检查时，可以让应用直接调用 DeepSeek 判卷：
+所有判卷都由 API 完成：
 
 1. 打开「设置」→「AI 判卷（DeepSeek）」。
 2. 填入你的 API Key（默认模型 `deepseek-chat`，Base URL `https://api.deepseek.com`），保存并点「测试连接」。
@@ -168,9 +154,10 @@ python tools/check.py --session <id> --override 7=correct --apply
 
 - Key 只保存在本机 `data/secrets.json`，不会回传给浏览器；不要把这个文件发给别人。
 - 判卷会调用 DeepSeek API，按你的账号计费；一轮一次请求。
-- AI 判错或不确定时，可以把答题包交给支持 `AGENTS.md` 的助手复核，或自己用 CLI 改判后覆盖检查记录。
-- 没有 Key 也完全能用：保存/导出答题包，交给 AI 助手或自己用 CLI 检查。
+- AI 返回不完整时会直接报错，不会偷偷改用本地匹配。
+- 判卷使用固定、较长的评分规则前缀，DeepSeek 会自动命中 context cache；结果页会显示「缓存命中 / 未命中 tokens」（如果 API 返回 usage）。每轮的单词和答案不同，动态部分无法跨轮命中，这是正常的。
 - 模型和 Base URL 可改，兼容 OpenAI 风格的 `/chat/completions` 接口。
+- 不配置 Key 也能听写、记录、导出答题包，但不能判卷。
 
 ## 数据文件
 
@@ -193,6 +180,7 @@ data/
 - 使用浏览器 Web Speech API，优先选择英文自然音色（如 Microsoft Aria / William / Jenny）。
 - 推荐用 **Edge**；Chrome 也可以。Windows 自带的英文语音通常可用。
 - 如果下拉框没有英文语音：Windows 设置 → 时间和语言 → 语音 → 添加英文语音，然后刷新页面。
+- 如果蓝牙耳机在第一个词前还没激活，打开「耳机保活（蓝牙预热）」；应用会用极低音量的静音音频保持音频通道，系统静音也有效。也可以先点「试听语音」预热。
 - 页面切到后台会自动暂停，避免漏词；回到页面后按空格继续。
 - 如果第一次播放提示 `not-allowed`，点「继续」重试，或在设置里换一个英文音色。
 
@@ -213,10 +201,11 @@ data/
 python -m unittest discover -s tests -v
 ```
 
+当前 42 个测试通过（本地判卷相关测试已随功能移除）。
+
 ## 当前版本没有做
 
-- 完全本地、不依赖 API 的自动判分（现在有本地近似匹配 + 可选的 DeepSeek AI 判卷）
-- exe 打包、手机 / 局域网访问
+- 本地判卷（现在所有判卷都走 DeepSeek / 兼容 API，不提供本地 CLI）
 - 拍照 OCR 检查
 - 多词短语 / 派生词自动展开
 

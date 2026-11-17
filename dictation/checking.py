@@ -5,9 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import now_iso
-from .matching import MatchResult, match_answer
 from .progress import Progress, derive
-from .sheet import effective_heard
 from .store import (
     answers_json_path,
     answers_md_path,
@@ -163,57 +161,8 @@ def pending_sessions(data_dir: str | Path) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# check computation
+# check application
 # ---------------------------------------------------------------------------
-
-def compute_result(
-    session: dict[str, Any],
-    answers: dict[str, str],
-    threshold: int | None = None,
-) -> dict[str, Any]:
-    threshold = int(threshold or 5)
-    heard = effective_heard(session)
-    words = (session.get("words") or [])[:heard]
-    normalized_answers = {str(k): str(v) for k, v in (answers or {}).items()}
-    items = []
-    warnings: list[str] = []
-    for word in words:
-        n = str(word.get("n", ""))
-        answer = normalized_answers.get(n, "")
-        match: MatchResult = match_answer(answer, str(word.get("translation") or ""))
-        items.append({
-            "n": int(word.get("n", 0)),
-            "word": word.get("word", ""),
-            "phonetic": word.get("phonetic", ""),
-            "answer": answer,
-            "verdict": match.verdict,
-            "score": match.score,
-            "matched": match.matched,
-            "expected": word.get("translation", ""),
-        })
-    extra = sorted(
-        (key for key in normalized_answers if key not in {str(w.get("n")) for w in words}),
-        key=lambda key: int(key) if key.isdigit() else 10**9,
-    )
-    if extra:
-        warnings.append(
-            "答题纸包含本轮未播放的题号，已忽略："
-            + ", ".join(extra[:20])
-            + ("…" if len(extra) > 20 else "")
-        )
-    summary = summarize_items(items)
-    return {
-        "session_id": session["id"],
-        "session_created_at": session.get("created_at"),
-        "seed": session.get("seed"),
-        "source_name": session.get("source_name"),
-        "threshold": threshold,
-        "heard": heard,
-        "items": items,
-        "summary": summary,
-        "warnings": warnings,
-    }
-
 
 def summarize_items(items: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(items)

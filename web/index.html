@@ -117,8 +117,10 @@
 
         <div class="toggle-row">
           <label class="switch"><input id="show-word" type="checkbox"><span></span>显示英文（默认纯听力）</label>
+          <label class="switch"><input id="keep-audio" type="checkbox" checked><span></span>耳机保活（蓝牙预热）</label>
           <button id="test-voice" class="ghost mini" type="button">试听语音</button>
         </div>
+        <p class="hint">耳机保活会用极低音量的静音音频保持蓝牙/耳机通道，避免开始后第一词还在等耳机激活；系统静音也有效。</p>
 
         <div class="start-row">
           <div id="pool-hint" class="pool-hint">—</div>
@@ -202,7 +204,7 @@
           <button id="copy-command" class="ghost" type="button">复制检查指令</button>
           <button id="replay-session" class="ghost" type="button">重听本轮</button>
         </div>
-        <p class="hint">AI 判卷需要先在「设置」里配置 DeepSeek API Key；也可以保存答题纸后，在对话里发送「检查 <场次ID>」交给我复核。</p>
+        <p class="hint">AI 判卷需要先在「设置」里配置 DeepSeek API Key；所有判卷都通过 API，不再使用本地判卷。答题纸可以保存/导出作为备份。</p>
         <p class="hint">当前检查指令：<b id="check-command">检查 …</b></p>
       </div>
 

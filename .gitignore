@@ -8,3 +8,18 @@ data/wordbooks/
 data/archive/
 data/settings.json
 data/resets.json
+
+# build artifacts and local Android toolchain/signing
+build-tools/
+build/
+dist/
+*.spec
+android/.gradle/
+android/local.properties
+android/keystore/
+android/keystore.properties
+android/app/build/
+android/build.log
+android/app/src/main/python/**/__pycache__/
+android/app/src/main/python/android_assets/
+

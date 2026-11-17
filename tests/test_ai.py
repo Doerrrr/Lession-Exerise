@@ -139,7 +139,7 @@ class AiGradeTests(unittest.TestCase):
         self.assertEqual(result["items"][1]["reason"], "意思不对")
         self.assertIn("放弃", result["items"][0]["expected"])
 
-    def test_missing_ai_item_uses_local_matcher(self):
+    def test_missing_ai_item_raises_instead_of_local_grading(self):
         tmp, data = make_data()
         self.addCleanup(tmp.cleanup)
         ai.save_ai_settings(data, api_key="sk-test")
@@ -147,9 +147,8 @@ class AiGradeTests(unittest.TestCase):
         answers = {"1": "放弃", "2": "能力", "3": "香蕉"}
         fake = json.dumps({"results": [{"n": 1, "verdict": "correct"}]})
         with patch("dictation.ai.call_chat", return_value=fake):
-            result = ai.grade_session(data, session, answers)
-        self.assertEqual(result["items"][1]["verdict"], "correct")
-        self.assertTrue(result["warnings"])
+            with self.assertRaises(ai.AiError):
+                ai.grade_session(data, session, answers)
 
     def test_no_key_raises(self):
         tmp, data = make_data()

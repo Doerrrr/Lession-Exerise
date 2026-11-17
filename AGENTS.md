@@ -1,13 +1,19 @@
-# AGENTS.md · 听写本检查协议
+# AGENTS.md · 听写本维护说明
 
-这个文件给后续接手本项目的 AI / 开发者看。用户主要用它做英语单词听写，然后让 AI 检查答题纸。
+这个文件给后续接手本项目的 AI / 开发者看。
+
+## 最重要的规则：全部判卷走 API
+
+- **从 v0.3.0 起，所有判卷都必须走应用内的「AI 判卷」**，调用 DeepSeek 或兼容的 `/chat/completions` API。
+- **不再提供本地判卷**：没有本地匹配 CLI、没有 `tools/check.py`、AI 返回不完整时也不会偷偷改用本地匹配。
+- 答题纸/答题包只作为备份；不要根据答题纸自行给出对错，也不要用本地规则写 `data/checks/`。
+- 历史记录里旧的本地检查结果只作为旧数据保留；新结果一律由 API 产生。
 
 ## 项目结构
 
 - `server.py` — 本地 HTTP 服务，默认 `127.0.0.1:8765`
-- `dictation/` — 核心：词库、种子抽样、答题纸、匹配、进度派生、检查
+- `dictation/` — 词库、种子抽样、答题纸、进度派生、AI 判卷
 - `tools/build_words.py` — 从 ECDICT 构建 `data/words.json`
-- `tools/check.py` — 检查 CLI（AI 的主要入口）
 - `web/` — 原生 HTML/CSS/JS 前端
 - `data/` — 全部用户数据；`data/checks/` 是学习进度的唯一事实来源
 - `tests/` — `python -m unittest discover -s tests -v`
@@ -18,7 +24,7 @@
 python server.py --open
 ```
 
-或双击 `start.bat`。默认地址 `http://127.0.0.1:8765`；端口被占用时会顺延，以服务窗口打印的地址为准。启动后验证：
+或双击 `start.bat`。默认地址 `http://127.0.0.1:8765`；端口被占用时会顺延，以服务窗口打印的地址为准。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/api/health
@@ -26,64 +32,18 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 
 不要把服务改成监听 `0.0.0.0`，这是本机单用户工具。
 
-## 用户检查一轮的完整流程
+## 用户一轮的流程
 
-1. 用户在听写页可以直接在输入框写中文意思；按 Enter / 下一个会自动把上一题保存到 `data/sessions/<id>-answers.md`，并清空输入框进入下一题。
-2. 用户听完后，可以：
-   - 点「AI 判卷」让 DeepSeek 直接判分（需要先在设置里配置 API Key）；
-   - 或点「保存答题纸」/「导出答题包」，把 `检查 <场次ID>` 发给你。
-3. 用户会发：`检查 <场次ID>`，或给你答题纸路径 / 种子 / 直接说「检查刚才那轮」。
-4. 先找待检查项：
-
-   ```bat
-   python tools/check.py --pending
-   ```
-
-   也可以：
-
-   ```bat
-   python tools/check.py --session <id>          # 指定场次
-   python tools/check.py --seed 483920            # 按种子找最近一轮
-   ```
-
-5. **先干跑，不写进度**：
-
-   ```bat
-   python tools/check.py --session <id>
-   python tools/check.py --session <id> --all     # 想看全部题目时
-   ```
-
-   输出会列出错误、未作答和 `待确认`（相似度在 0.5 以上的近似答案）。
-   自动匹配规则：命中任一义项（包含关系也算）判对；近似但不确定的判 `uncertain`；其余判错。词典可能缺同义词，所以**必须复核 `待确认` 项**。
-
-6. 需要人工改判时用 `--override`（题号或单词均可，可重复）：
-
-   ```bat
-   python tools/check.py --session <id> --override 7=correct --override abandon=wrong
-   ```
-
-7. 正式写入（会更新新词本 / 错题本 / 已掌握）：
-
-   ```bat
-   python tools/check.py --session <id> --accept-uncertain=wrong --apply
-   ```
-
-   - `--accept-uncertain=wrong` 是保守做法；复核后确认对的用 `--override N=correct` 改判。
-   - 有未作答时，`--apply` 需要 `--allow-blank`；只有在用户确实留空、且愿意按错题处理时才加。
-   - 同一场次重复检查会覆盖 `data/checks/<id>.json`，不会重复累计连对。
-   - 检查完成后会生成 `data/checks/<id>.report.md`。
-
-8. 用中文回报用户：
-   - 本轮题数、正确 / 错误 / 未作答、正确率
-   - 每道错题的「单词 / 你的答案 / 参考释义」
-   - 本轮新掌握的词
-   - 新词本、错题本、已掌握的数量变化
-   - 下一步建议（刷新页面、下一轮、错题本重听）
+1. 用户在听写页输入中文意思；Enter/下一个会保存上一题并清空输入框。
+2. 听写结束后，用户在答题页填写答案，点「AI 判卷」。
+3. 应用调用 DeepSeek/兼容 API；检查记录写入 `data/checks/<id>.json`，进度由它派生。
+4. 结果页可以每词发音、重听本轮、重听本轮错题。
+5. 如果 API Key 未配置、网络失败或 AI 返回不完整，应用会报错；引导用户检查设置/重试，**不要本地判卷**。
 
 ## 规则与不变量
 
 - **不要提前泄露答案**：`data/sessions/<id>.json` 含答案键；用户还没听写/填写时，不要把释义发到对话里。
-- 新词本 = 所有未掌握词；错题本 = 未掌握且 `wrong_count > 0` 的词；连续答对阈值默认 5（`data/settings.json`）。
+- 新词本 = 所有未掌握词；错题本 = 未掌握且 `wrong_count > 0` 的词；连续答对阈值默认 5。
 - 连续答对 5 次 → `mastered`，同时离开新词本和错题本。答错 → `streak=0`、`wrong_count+1`。
 - 进度是从 `data/checks/*.json` 按场次创建时间派生出来的，**不要手写增量进度文件**。
 - `data/resets.json` 记录单词重置时间；重置只影响此时间之前的检查记录。
@@ -104,14 +64,12 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 
 ## AI 判卷（DeepSeek）
 
-- 应用内可直接调用 DeepSeek 判卷；检查记录会带 `"engine": "deepseek"`、`model` 和每题 `reason`。
-- API Key 存在 `data/secrets.json`，**永远不要打印、复制或发送这个文件的内容**；不要把它写进对话、报告或日志。
+- 应用内点「AI 判卷」；检查记录带 `"engine": "deepseek"`、`model` 和每题 `reason`。
+- API Key 存在 `data/secrets.json`，**永远不要打印、复制或发送这个文件的内容**。
 - 判卷时会把本轮单词、参考释义和用户答案发送到用户配置的 DeepSeek / 兼容接口。
-- 如果用户对 AI 判卷有疑问，用常规 `tools/check.py` 复合并用 `--override` 覆盖；检查文件会被安全替换。
-- AI 返回 `uncertain` 时，派生进度按错题处理；提醒用户可人工复核。
+- **AI 没有返回完整结果时直接报错，不 fallback 到本地匹配**；由用户重试。
 - 相关接口：`PUT /api/ai/settings`、`POST /api/ai/test`、`POST /api/sessions/<id>/ai-check`。
-- 不配置 API Key 也完全可用：导出答题包 + 你运行 CLI 复核。
-- 结果页有「重听本轮错题」：调用 `POST /api/sessions/<id>/retry-wrong`，从该轮检查记录里取 wrong/blank/uncertain 的词新建一轮 `source: retry_wrong` 的会话；不会改动原轮次。
+- 结果页「重听本轮错题」：`POST /api/sessions/<id>/retry-wrong`，从该轮检查记录里取 wrong/blank/uncertain 的词新建一轮 `source: retry_wrong` 的会话；不会改动原轮次。
 
 ## 常用测试
 
@@ -119,11 +77,12 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 python -m unittest discover -s tests -v
 ```
 
-覆盖：种子复现、词频前 N、答题纸往返、中文释义匹配、五连对、错题本派生、重置、API、静态页面。
+覆盖：种子复现、词频前 N、答题纸往返、五连对、错题本派生、重置、API、AI 判卷、自定义词本。
 
 ## 注意
 
 - `data/words.json` 由 ECDICT 构建（MIT，见 `THIRD_PARTY_NOTICES.md`），当前 5,802 词（四级 3,846、六级 5,406、六级新增 1,956）。
 - 词频是 COCA `frq` 顺序，作为「听力词频」的近似；不是真题听力词频。
 - 浏览器 TTS 需要页面保持前台；应用已做后台自动暂停。
+- 蓝牙耳机第一词前可能还在激活：用户可打开「耳机保活（蓝牙预热）」，应用用极低音量静音音频保持通道；系统静音也有效。
 - 服务是单用户本地工具，不需要登录和 CORS。

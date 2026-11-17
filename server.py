@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import shutil
 import sys
 import threading
 import time
@@ -20,9 +22,50 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+FROZEN = bool(getattr(sys, "frozen", False))
+APP_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _writable_dir(candidate: Path) -> bool:
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / ".write-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def default_data_dir() -> Path:
+    """Writable data directory.
+
+    Script mode keeps the historical ``<repo>/data``.  Frozen mode prefers a
+    ``data`` folder next to the exe (portable), then ``%APPDATA%/Dictation/data``.
+    """
+    if not FROZEN:
+        return ROOT / "data"
+    candidates = [
+        Path(sys.executable).resolve().parent / "data",
+        Path(os.environ.get("APPDATA") or Path.home()) / "Dictation" / "data",
+    ]
+    for candidate in candidates:
+        if _writable_dir(candidate):
+            return candidate
+    return candidates[-1]
+
+
+def ensure_seed_file(data_dir: Path) -> None:
+    """Copy the bundled read-only words.json into the writable data dir once."""
+    seed = APP_ROOT / "data" / "words.json"
+    target = data_dir / "words.json"
+    if target.exists() or not seed.exists():
+        return
+    data_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(seed, target)
 
 from dictation import __version__, ai, wordbooks  # noqa: E402
 from dictation.checking import (  # noqa: E402
@@ -798,14 +841,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="单词听写本地服务")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址（默认仅本机）")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--data-dir", default=str(ROOT / "data"))
-    parser.add_argument("--web-dir", default=str(ROOT / "web"))
+    parser.add_argument("--data-dir", default=str(default_data_dir()))
+    parser.add_argument("--web-dir", default=str(APP_ROOT / "web"))
     parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
     parser.add_argument("--no-open", action="store_true", help="不要打开浏览器")
     args = parser.parse_args()
+    if FROZEN and not args.no_open:
+        args.open = True
 
     data_dir = Path(args.data_dir).resolve()
     web_dir = Path(args.web_dir).resolve()
+    ensure_seed_file(data_dir)
     if not (web_dir / "index.html").exists():
         print(f"找不到前端文件：{web_dir / 'index.html'}", file=sys.stderr)
         return 1
