@@ -171,7 +171,7 @@
         </div>
         <p id="session-hint" class="hint">空格：暂停/继续 · → / N：下一个 · R：重读 · ←：上一个 · Esc：结束</p>
       </div>
-      <p class="listen-note">可以直接在上面的输入框写中文意思：按 Enter 或点「下一个」会自动保存上一题并清空。也可以写在纸上，结束后再录入。</p>
+      <p class="listen-note">直接在输入框写中文意思：Enter 下一个、空格暂停、↑/← 上一个、↓/→ 下一个。按 Esc 退出输入框后，可用 R 重读等全局快捷键。</p>
     </div>
   </section>
 
@@ -298,6 +298,25 @@
           <button id="ai-clear" class="danger" type="button">清除 Key</button>
         </div>
         <p class="hint">Key 只保存在本机 <code>data/secrets.json</code>，不会回传给浏览器。判卷时会把本轮单词、参考释义和你的答案发送给 DeepSeek。</p>
+      </div>
+      <div class="paper-card wordbook-card">
+        <div class="card-head"><h2>自定义词本</h2><span id="wordbook-count" class="tag">0 个</span></div>
+        <p class="hint">支持 JSON / CSV。格式说明见 <a href="https://github.com/Doerrrr/Lession-Exerise/blob/main/docs/WORDBOOK_FORMAT.md" target="_blank" rel="noreferrer">WORDBOOK_FORMAT.md</a>，也可以直接下载模板。导入后会出现在「词库来源」的「自定义词本」里。</p>
+        <div class="field-grid two">
+          <label class="field">词本名称（可选）
+            <input id="wordbook-name" type="text" placeholder="默认使用文件里的 name">
+          </label>
+          <label class="field">文件
+            <input id="wordbook-file" type="file" accept=".json,.csv,application/json,text/csv">
+          </label>
+        </div>
+        <div class="actions">
+          <button id="wordbook-import" class="primary" type="button">导入词本</button>
+          <button id="wordbook-template-json" class="ghost" type="button">下载 JSON 模板</button>
+          <button id="wordbook-template-csv" class="ghost" type="button">下载 CSV 模板</button>
+        </div>
+        <p id="wordbook-import-hint" class="hint"></p>
+        <div id="wordbook-list" class="wordbook-list"></div>
       </div>
       <div class="paper-card danger-card">
         <div class="card-head"><h2>清空学习记录</h2></div>

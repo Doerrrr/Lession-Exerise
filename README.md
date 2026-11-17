@@ -1,10 +1,11 @@
 # 听写本
 
-> 当前版本：v0.1.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.2.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
 - 四级 / 六级 / 六级新增 / 全部词库 / 错题本
+- 支持导入自己的 JSON / CSV 词本
 - 按词频取前 N 个，再用种子随机抽 K 个
 - 听写页直接输入答案；按 Enter / 下一个自动保存上一题并清空
 - 自动连读或「读完就停、按键下一个」
@@ -18,6 +19,10 @@
 ![听写页：内嵌答题输入框](docs/session-answer-box.png)
 
 ![答题页：AI 判卷、批量填写、导出答题包](docs/answers-ai.png)
+
+![检查结果：每个单词都可以点小喇叭听](docs/result-listen.png)
+
+![导入自定义词本](docs/settings-wordbooks.png)
 
 ## 快速开始
 
@@ -45,6 +50,42 @@
    - 没有 Key 时，点「保存答题纸」/「导出答题包」，把答题包交给 AI 助手检查。
 4. **检查**：答题包包含场次 ID、种子和你的答案；检查后错词会写进错题本。
 5. **下一轮**：刷新页面，新词本/错题本数量已更新；错词可以直接用「错题本」来源再听。
+
+## 导入自定义词本
+
+支持把自己的单词表导进来，和内置词库共用听写、种子、新词本、错题本、AI 判卷。
+
+1. 打开「设置 → 自定义词本」。
+2. 选择 JSON 或 CSV 文件；也可以先点「下载 JSON 模板 / CSV 模板」。
+3. 点「导入词本」。
+4. 回到「听写」页，在「词库来源 → 自定义词本」里选择刚导入的词本。
+
+固定格式说明见 [docs/WORDBOOK_FORMAT.md](docs/WORDBOOK_FORMAT.md)。JSON 示例：
+
+```json
+{
+  "format": "dictation-wordbook",
+  "version": 1,
+  "name": "我的新词本",
+  "words": [
+    {"word": "abandon", "translation": "放弃；抛弃", "phonetic": "ə'bændən", "frequency": 1000},
+    {"word": "ability", "translation": "能力；才干", "phonetic": "ə'biliti", "frequency": 800}
+  ]
+}
+```
+
+CSV 示例：
+
+```csv
+word,translation,phonetic,frequency
+abandon,放弃；抛弃,ə'bændən,1000
+ability,能力；才干,ə'biliti,800
+```
+
+- 文件 UTF-8、最多 2 MB、最多 10,000 个词；只收单个英文单词。
+- 导入后词本存在 `data/wordbooks/`（个人数据，已被 `.gitignore` 排除）。
+- 每个词本会生成「新词本」和「全部」两个听写来源，并参与全局错题本和已掌握。
+- 删除词本不会删除历史听写记录。
 
 ## 新词本 / 错题本规则
 
@@ -136,6 +177,7 @@ data/
 ├─ secrets.json               DeepSeek API Key（本机私有，不要外发）
 ├─ sessions/                  每轮配置、词表、答案键、答题纸
 ├─ checks/                    检查记录 + 报告（进度由它们派生）
+├─ wordbooks/                 导入的自定义词本（个人数据）
 ├─ resets.json                单词重置记录
 └─ archive/                   「清空学习记录」时归档的旧检查
 ```
@@ -170,9 +212,9 @@ python -m unittest discover -s tests -v
 ## 当前版本没有做
 
 - 完全本地、不依赖 API 的自动判分（现在有本地近似匹配 + 可选的 DeepSeek AI 判卷）
-- 自定义词表导入
 - exe 打包、手机 / 局域网访问
 - 拍照 OCR 检查
+- 多词短语 / 派生词自动展开
 
 需要的话可以在下一版加。
 

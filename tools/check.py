@@ -217,7 +217,7 @@ def main() -> int:
         finalize_verdicts(result, uncertain_as=args.accept_uncertain or "wrong")
         result["summary"] = result["summary"]
 
-    total_words = WordRepository(data_dir).total_count()
+    total_words = WordRepository(data_dir).catalog_total_count()
     applied = apply_result(data_dir, session, result, total_words)
     summary = applied["summary"]
     print("\n已写入检查记录。")

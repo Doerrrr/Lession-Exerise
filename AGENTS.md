@@ -89,8 +89,18 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 - `data/resets.json` 记录单词重置时间；重置只影响此时间之前的检查记录。
 - 只有实际播放过的题才应计入（`heard_count`）；答题纸里多出来的题号会被提示并忽略。
 - 不要直接修改 `data/words.json`；需要换词库时运行 `tools/build_words.py`。
-- 不要删除用户 `data/sessions/` 或 `data/checks/`；「清空学习记录」应通过应用/API 归档。
+- 不要删除用户 `data/sessions/`、`data/checks/`、`data/wordbooks/`；「清空学习记录」应通过应用/API 归档。
 - 真实音色 / 语音问题交给用户试听；不要声称你听过音频。无英文语音时引导用 Edge 或安装 Windows 英文语音。
+
+## 自定义词本
+
+- 固定格式见 `docs/WORDBOOK_FORMAT.md`；JSON 是主格式，CSV 是导入便利格式。
+- 导入后保存在 `data/wordbooks/<id>.json`，属于个人数据；`.gitignore` 已排除，不要提交。
+- 每个词本生成两个来源：`custom_new:<id>`（未掌握）和 `custom_all:<id>`（含已掌握）。
+- 自定义词与内置词共用进度 / 错题本 / 已掌握；`data/books` 的 all 视图和全局错题本会包含自定义词。
+- 导入接口：`POST /api/wordbooks/import`；删除：`POST /api/wordbooks/delete`；模板：`GET /api/wordbooks/template?format=json|csv`。
+- 导入/删除后后端会 `reload_custom`；如果手工改文件，需要重启服务。
+- 词本最多 10,000 词、2 MB；只收单个英文单词。
 
 ## AI 判卷（DeepSeek）
 

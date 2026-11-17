@@ -570,6 +570,23 @@ input[type="range"] { width: 100%; accent-color: var(--green); }
 .result-stat span { color: var(--muted); font-size: 11px; }
 .result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .result-table-wrap { max-height: 56vh; overflow: auto; border: 1px solid #f0e9dd; border-radius: 12px; }
+.result-word { display: flex; align-items: center; gap: 6px; }
+.speak-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #e2d8c6;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.speak-btn:hover { color: var(--green); border-color: var(--green); background: #f2faf6; }
+.speak-btn svg { display: block; }
 .result-table th, .result-table td { padding: 9px 8px; border-bottom: 1px solid #f0e9dd; text-align: left; vertical-align: top; }
 .result-table th { color: var(--muted); font-size: 11px; font-weight: 600; }
 .result-meaning { color: #5c676b; line-height: 1.6; }
@@ -683,6 +700,21 @@ input[type="range"] { width: 100%; accent-color: var(--green); }
 .inline-form input { flex: 1; width: auto; min-width: 0; }
 .inline-form button { flex: 0 0 auto; white-space: nowrap; }
 .ai-card { grid-column: span 2; }
+.wordbook-card { grid-column: span 2; }
+.wordbook-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.wordbook-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ece3d4;
+  border-radius: 12px;
+  background: #fffdf8;
+}
+.wordbook-item .meta { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.wordbook-card a { color: var(--green); text-decoration: underline; }
+.field input[type="file"] { padding: 8px; font-size: 12px; }
 .batch-dialog { width: min(680px, 94vw); }
 .batch-body { padding: 18px 20px 20px; }
 #batch-text {
@@ -769,6 +801,7 @@ code {
   .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .field-wide { grid-column: span 2; }
   .ai-card { grid-column: auto; }
+  .wordbook-card { grid-column: auto; }
 }
 @media (max-width: 720px) {
   main { width: min(100% - 24px, 1180px); }

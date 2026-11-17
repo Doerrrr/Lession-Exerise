@@ -4,6 +4,7 @@ data/.cache/
 data/secrets.json
 data/sessions/
 data/checks/
+data/wordbooks/
 data/archive/
 data/settings.json
 data/resets.json

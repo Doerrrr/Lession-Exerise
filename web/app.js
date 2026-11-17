@@ -20,6 +20,8 @@ const VERDICT_LABELS = {
   uncertain: '待确认',
 };
 
+const SPEAKER_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 9v6h4l5 4V5L8 9H4zm11.5 3a4.5 4.5 0 0 1-2.5 4v-8a4.5 4.5 0 0 1 2.5 4z"/></svg>';
+
 const state = {
   version: '',
   meta: null,
@@ -29,6 +31,7 @@ const state = {
   recent: [],
   pending: [],
   ai: { configured: false, model: 'deepseek-chat', base_url: 'https://api.deepseek.com', masked_key: '' },
+  wordbooks: [],
   voices: [],
   session: null,
   words: [],
@@ -202,6 +205,7 @@ async function loadState() {
     state.recent = data.recent_sessions || [];
     state.pending = data.pending || [];
     state.ai = data.ai || state.ai;
+    state.wordbooks = data.wordbooks || [];
     if (data.settings && data.settings.threshold) state.settings.threshold = data.settings.threshold;
     renderStats();
     renderSources();
@@ -241,6 +245,7 @@ function renderSources() {
     ['new', '新词本'],
     ['wrong', '错题本'],
     ['all', '全部词库'],
+    ['custom', '自定义词本'],
   ];
   select.innerHTML = '';
   for (const [book, label] of groups) {
@@ -358,6 +363,94 @@ function renderSettings() {
       ? '已配置。答题页点「AI 判卷」即可自动判分；Key 只保存在本机。'
       : '配置 API Key 后，答题页可以直接点「AI 判卷」自动判分；不配置也可以把答题纸发给我复核。';
   }
+  renderWordbooks();
+}
+
+/* ------------------------------------------------------------------ */
+/* custom wordbooks                                                    */
+/* ------------------------------------------------------------------ */
+function renderWordbooks() {
+  const count = $('#wordbook-count');
+  if (count) count.textContent = `${state.wordbooks.length} 个`;
+  const list = $('#wordbook-list');
+  if (!list) return;
+  if (!state.wordbooks.length) {
+    list.innerHTML = '<p class="empty">还没有导入自定义词本。支持 JSON / CSV，也可以先下载模板。</p>';
+    return;
+  }
+  list.innerHTML = state.wordbooks.map((book) => {
+    const meta = [
+      `${book.count} 个词`,
+      `未掌握 ${book.new_count ?? '—'}`,
+      `已掌握 ${book.mastered_count ?? 0}`,
+    ];
+    if (book.description) meta.push(book.description);
+    return `
+      <div class="wordbook-item">
+        <div>
+          <b>${escapeHtml(book.name)}</b>
+          <div class="meta">${meta.map(escapeHtml).join(' · ')}</div>
+        </div>
+        <button class="row-btn danger-text" type="button" data-delete-wordbook="${escapeHtml(book.id)}">删除</button>
+      </div>`;
+  }).join('');
+}
+
+async function importWordbook() {
+  const fileInput = $('#wordbook-file');
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    toast('先选择一个 JSON 或 CSV 文件', 'error');
+    return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    toast('文件太大（最多 2 MB）', 'error');
+    return;
+  }
+  const button = $('#wordbook-import');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '导入中…';
+  const hint = $('#wordbook-import-hint');
+  if (hint) hint.textContent = '';
+  try {
+    const content = await file.text();
+    const name = $('#wordbook-name').value.trim();
+    const body = { filename: file.name, content };
+    if (name) body.name = name;
+    const data = await api('/api/wordbooks/import', { method: 'POST', body });
+    toast(`已导入「${data.book.name}」：${data.book.count} 个词`);
+    fileInput.value = '';
+    $('#wordbook-name').value = '';
+    state.wordbooks = data.wordbooks || state.wordbooks;
+    await loadState();
+    renderSettings();
+    if (hint) hint.textContent = '导入成功。去「听写」页，在「词库来源 → 自定义词本」里选择它。';
+  } catch (err) {
+    toast(err.message, 'error');
+    if (hint) hint.textContent = err.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+async function deleteWordbook(bookId) {
+  const book = state.wordbooks.find((item) => item.id === bookId);
+  if (!window.confirm(`删除自定义词本「${book?.name || bookId}」？\n历史听写记录会保留，但该词本会从来源和浏览中移除。`)) return;
+  try {
+    const data = await api('/api/wordbooks/delete', { method: 'POST', body: { id: bookId } });
+    state.wordbooks = data.wordbooks || [];
+    await loadState();
+    renderSettings();
+    toast('词本已删除');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function downloadWordbookTemplate(fmt) {
+  window.location.href = `/api/wordbooks/template?format=${fmt}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -631,6 +724,16 @@ function testVoice() {
   speakText('abandon');
 }
 
+function speakWord(word) {
+  const text = String(word || '').trim();
+  if (!text) return;
+  if (!state.voices.length) {
+    toast('没有可用的英文语音，请使用 Edge 或安装英文语音', 'error');
+    return;
+  }
+  speakText(text);
+}
+
 /* ------------------------------------------------------------------ */
 /* session player                                                      */
 /* ------------------------------------------------------------------ */
@@ -803,9 +906,7 @@ function updateSessionUI() {
   if (prevBtn) prevBtn.disabled = state.index <= 0;
   const hintEl = $('#session-hint');
   if (hintEl) {
-    hintEl.textContent = state.mode === 'manual'
-      ? '空格 / →：下一个 · R：重读 · ←：上一个 · Esc：结束'
-      : '空格：暂停/继续 · → / N：下一个 · R：重读 · ←：上一个 · Esc：结束';
+    hintEl.textContent = '输入框内：Enter 下一个 · 空格 暂停 · ↑/← 上一个 · ↓/→ 下一个 · Esc 退出输入';
   }
   const answerInput = $('#session-answer');
   if (answerInput) {
@@ -993,8 +1094,8 @@ function syncSessionAnswerInput() {
   }
   input.disabled = false;
   input.value = state.sessionAnswers[n] ?? '';
-  input.placeholder = '在这里写中文意思，按 Enter 到下一个…';
-  if (hint) hint.textContent = '按 Enter 或点「下一个」：自动保存上一题，输入框清空。';
+  input.placeholder = '在这里写中文意思…';
+  if (hint) hint.textContent = '输入框内：Enter 下一个 · 空格 暂停 · ↑/← 上一个 · ↓/→ 下一个';
 }
 
 function saveSessionDraft() {
@@ -1356,7 +1457,13 @@ function renderResult(report) {
     return `
       <tr class="${escapeHtml(verdict)}">
         <td>${item.n}</td>
-        <td><b>${escapeHtml(item.word)}</b><br><span class="hint">${escapeHtml(item.phonetic || '')}</span></td>
+        <td>
+          <div class="result-word">
+            <b>${escapeHtml(item.word)}</b>
+            <button class="speak-btn" type="button" data-speak-word="${escapeHtml(item.word)}" title="听发音" aria-label="听 ${escapeHtml(item.word)}">${SPEAKER_SVG}</button>
+          </div>
+          <span class="hint">${escapeHtml(item.phonetic || '')}</span>
+        </td>
         <td>${escapeHtml(item.answer || '—')}</td>
         <td><span class="verdict ${escapeHtml(verdict)}">${VERDICT_LABELS[verdict] || verdict}</span></td>
         <td class="result-meaning">${expected}${reason}</td>
@@ -1449,6 +1556,7 @@ function renderBooks(data) {
       const action = state.books.book === 'mastered'
         ? `<button class="row-btn danger-text" type="button" data-reset-word="${escapeHtml(item.word)}">重新学习</button>`
         : `<button class="row-btn" type="button" data-word-detail="${escapeHtml(item.word)}">详情</button>`;
+      const speak = `<button class="speak-btn" type="button" data-speak-word="${escapeHtml(item.word)}" title="听发音" aria-label="听 ${escapeHtml(item.word)}">${SPEAKER_SVG}</button>`;
       return `
         <tr>
           <td>
@@ -1459,7 +1567,7 @@ function renderBooks(data) {
           <td class="book-meaning">${escapeHtml(truncate(meaningText(item.translation), 110))}</td>
           <td><span class="streak-badge ${streak ? '' : 'zero'}">${streak}</span></td>
           <td>${wrong ? `<span class="wrong-badge">${wrong}</span>` : '—'}</td>
-          <td>${action}</td>
+          <td>${action} ${speak}</td>
         </tr>`;
     }).join('');
   }
@@ -1710,7 +1818,17 @@ function bindEvents() {
   });
   $('#session-answer').addEventListener('input', handleSessionAnswerInput);
   $('#session-answer').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      skipToNext();
+    } else if (event.key === ' ') {
+      event.preventDefault();
+      togglePause();
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      prevWord();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
       event.preventDefault();
       skipToNext();
     } else if (event.key === 'Escape') {
@@ -1719,6 +1837,8 @@ function bindEvents() {
     }
   });
   $('#result-panel').addEventListener('click', (event) => {
+    const speak = event.target.closest('[data-speak-word]');
+    if (speak) { speakWord(speak.dataset.speakWord); return; }
     const replay = event.target.closest('[data-replay-session]');
     if (replay) { replaySession(replay.dataset.replaySession); return; }
     const exportBtn = event.target.closest('[data-export-packet]');
@@ -1744,6 +1864,14 @@ function bindEvents() {
   });
   $('#ai-test').addEventListener('click', testAiSettings);
   $('#ai-clear').addEventListener('click', clearAiSettings);
+
+  $('#wordbook-import').addEventListener('click', importWordbook);
+  $('#wordbook-template-json').addEventListener('click', () => downloadWordbookTemplate('json'));
+  $('#wordbook-template-csv').addEventListener('click', () => downloadWordbookTemplate('csv'));
+  $('#wordbook-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-delete-wordbook]');
+    if (button) deleteWordbook(button.dataset.deleteWordbook);
+  });
 
   $('#book-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-book]');
@@ -1774,6 +1902,8 @@ function bindEvents() {
     loadBooks();
   });
   $('#book-body').addEventListener('click', (event) => {
+    const speak = event.target.closest('[data-speak-word]');
+    if (speak) { speakWord(speak.dataset.speakWord); return; }
     const reset = event.target.closest('[data-reset-word]');
     if (reset) { resetWord(reset.dataset.resetWord); return; }
     const detail = event.target.closest('[data-word-detail]');

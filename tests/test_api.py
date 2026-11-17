@@ -190,6 +190,63 @@ class ApiTests(unittest.TestCase):
         status, wrongbook = self.request("GET", "/api/books?book=wrong")
         self.assertEqual(wrongbook["total"], 1)
 
+    def test_wordbook_import_and_custom_source(self):
+        content = json.dumps({
+            "format": "dictation-wordbook",
+            "version": 1,
+            "name": "测试自定义词本",
+            "words": [
+                {"word": "xyzzy", "translation": "测试词一", "frequency": 10},
+                {"word": "plugh", "translation": "测试词二", "frequency": 20},
+                {"word": "frobnitz", "translation": "测试词三", "frequency": 30},
+            ],
+        }, ensure_ascii=False)
+        status, imported = self.request("POST", "/api/wordbooks/import", {
+            "filename": "custom.json",
+            "content": content,
+        })
+        self.assertEqual(status, 200)
+        book = imported["book"]
+        self.assertEqual(book["count"], 3)
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(len(state["wordbooks"]), 1)
+        self.assertEqual(state["stats"]["total"], 10)  # 7 fixture + 3 custom
+        custom_sources = [s for s in state["sources"] if s["book"] == "custom"]
+        self.assertEqual(len(custom_sources), 2)
+        source_id = f"custom_new:{book['id']}"
+        self.assertIn(source_id, [s["id"] for s in custom_sources])
+
+        status, created = self.request("POST", "/api/sessions", {
+            "source": source_id, "pool": 3, "count": 2, "seed": 42,
+        })
+        self.assertEqual(status, 201)
+        session = created["session"]
+        self.assertIn("自定义", session["source_name"])
+        words = session["words"]
+        self.assertTrue(all(w["word"] in {"xyzzy", "plugh", "frobnitz"} for w in words))
+        self.assertEqual(len(words), 2)
+
+        self.request("POST", f"/api/sessions/{session['id']}/heard", {"heard_count": 2})
+        answers = {str(w["n"]): "错误答案" for w in words}
+        self.request("POST", f"/api/sessions/{session['id']}/answers", {"answers": answers})
+        loaded = load_session(self.data, session["id"])
+        repo = WordRepository(self.data)
+        result = compute_result(loaded, answers, threshold=5)
+        apply_result(self.data, loaded, result, repo.catalog_total_count())
+        status, state = self.request("GET", "/api/state")
+        wrong_source = next(s for s in state["sources"] if s["id"] == "wrong_all")
+        self.assertEqual(wrong_source["count"], 2)
+        status, wrongbook = self.request("GET", "/api/books?book=wrong&level=all")
+        self.assertEqual(wrongbook["total"], 2)
+        self.assertTrue(all(item["tags"] == ["custom"] for item in wrongbook["items"]))
+
+        status, deleted = self.request("POST", "/api/wordbooks/delete", {"id": book["id"]})
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["ok"])
+        status, state = self.request("GET", "/api/state")
+        self.assertEqual(state["wordbooks"], [])
+        self.assertFalse([s for s in state["sources"] if s["book"] == "custom"])
+
     def test_five_correct_sessions_master_words(self):
         answers = {
             "abandon": "放弃", "ability": "能力", "apple": "苹果",

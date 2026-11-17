@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dictation import __version__, ai  # noqa: E402
+from dictation import __version__, ai, wordbooks  # noqa: E402
 from dictation.checking import (  # noqa: E402
     apply_result,
     book_counts,
@@ -59,7 +59,7 @@ from dictation.store import (  # noqa: E402
 )
 from dictation.words import WordRepository, public_word, review_word  # noqa: E402
 
-MAX_BODY = 2 * 1024 * 1024
+MAX_BODY = 4 * 1024 * 1024
 
 
 class ApiError(Exception):
@@ -88,7 +88,7 @@ class App:
 
     def counts(self, progress=None) -> dict[str, Any]:
         progress = progress or self.progress()
-        return book_counts(progress, self.words.total_count())
+        return book_counts(progress, self.words.catalog_total_count())
 
     def public_session(self, session: dict[str, Any]) -> dict[str, Any]:
         data = {
@@ -131,6 +131,7 @@ class App:
             "recent_sessions": recent,
             "pending": pending_sessions(self.data_dir),
             "ai": ai.ai_status(self.data_dir),
+            "wordbooks": self.words.custom_book_summaries(progress),
         }
 
     # ------------------------------------------------------------------
@@ -138,7 +139,8 @@ class App:
     # ------------------------------------------------------------------
     def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
         source_id = str(payload.get("source") or self.settings().get("default_source") or DEFAULT_SOURCE)
-        if source_id not in SOURCE_BY_ID:
+        source = self.words.source_info(source_id)
+        if source is None:
             raise ApiError(400, f"未知词库来源：{source_id}")
         try:
             pool_requested = int(payload.get("pool") or 0)
@@ -174,7 +176,6 @@ class App:
         if seed == 0:
             seed = random_seed()
         selected = sample_words(candidate, actual_count, seed, order=order)
-        source = SOURCE_BY_ID[source_id]
         settings = self.settings()
         session = {
             "id": new_session_id(),
@@ -344,7 +345,7 @@ class App:
         except ai.AiError as exc:
             raise ApiError(502, str(exc))
         with self.lock:
-            applied = apply_result(self.data_dir, session, result, self.words.total_count())
+            applied = apply_result(self.data_dir, session, result, self.words.catalog_total_count())
         detail = self.session_detail(session_id)
         return {
             "check": applied,
@@ -352,6 +353,51 @@ class App:
             "markdown": report_markdown(session, applied),
             "ai": ai.ai_status(self.data_dir),
         }
+
+    # ------------------------------------------------------------------
+    # custom wordbooks
+    # ------------------------------------------------------------------
+    def wordbook_import(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content = payload.get("content")
+        if not isinstance(content, str):
+            raise ApiError(400, "缺少文件内容（content）")
+        filename = str(payload.get("filename") or "")
+        name = payload.get("name")
+        try:
+            parsed = wordbooks.parse_import(
+                content,
+                filename=filename,
+                name_override=str(name) if name else None,
+            )
+            book = wordbooks.save_book(self.data_dir, parsed)
+        except wordbooks.WordbookError as exc:
+            raise ApiError(400, str(exc))
+        self.words.reload_custom()
+        progress = self.progress()
+        return {
+            "ok": True,
+            "book": wordbooks.summarize_book(book, progress),
+            "wordbooks": self.words.custom_book_summaries(progress),
+        }
+
+    def wordbook_delete(self, payload: dict[str, Any]) -> dict[str, Any]:
+        book_id = str(payload.get("id") or "")
+        try:
+            deleted = wordbooks.delete_book(self.data_dir, book_id)
+        except wordbooks.WordbookError as exc:
+            raise ApiError(400, str(exc))
+        self.words.reload_custom()
+        progress = self.progress()
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "wordbooks": self.words.custom_book_summaries(progress),
+        }
+
+    def wordbook_template(self, fmt: str) -> tuple[str, str, str]:
+        if str(fmt).lower() == "csv":
+            return wordbooks.template_csv(), "wordbook-template.csv", "text/csv; charset=utf-8"
+        return wordbooks.template_json(), "wordbook-template.json", "application/json; charset=utf-8"
 
     # ------------------------------------------------------------------
     # books / history
@@ -369,10 +415,10 @@ class App:
         page_size = max(10, min(200, page_size))
         if book not in {"new", "wrong", "mastered", "all"}:
             raise ApiError(400, "book 只能是 new / wrong / mastered / all")
-        if level not in {"all", "cet4", "cet6", "cet6_new"}:
+        if level not in self.words.catalog_levels():
             raise ApiError(400, "level 参数不正确")
         progress = self.progress()
-        base = self.words.level_words(level)
+        base = self.words.catalog_words(level)
         filtered = []
         for word in base:
             state = progress.state(word["word"])
@@ -424,11 +470,11 @@ class App:
         level = (query.get("level") or ["all"])[0]
         if book not in {"new", "wrong", "mastered", "all"}:
             raise ApiError(400, "book 参数不正确")
-        if level not in {"all", "cet4", "cet6", "cet6_new"}:
+        if level not in self.words.catalog_levels():
             raise ApiError(400, "level 参数不正确")
         progress = self.progress()
         rows = []
-        for word in self.words.level_words(level):
+        for word in self.words.catalog_words(level):
             state = progress.state(word["word"])
             mastered = bool(state and state.mastered)
             wrong = state.wrong_count if state else 0
@@ -561,6 +607,18 @@ def make_handler(app: App):
                 return
             if path == "/api/ai/test" and method == "POST":
                 self._json(200, app.ai_test())
+                return
+            if path == "/api/wordbooks/import" and method == "POST":
+                self._json(200, app.wordbook_import(self._body()))
+                return
+            if path == "/api/wordbooks/delete" and method == "POST":
+                self._json(200, app.wordbook_delete(self._body()))
+                return
+            if path == "/api/wordbooks/template" and method == "GET":
+                fmt = (query.get("format") or ["json"])[0]
+                text, filename, content_type = app.wordbook_template(fmt)
+                self._text(200, text, content_type,
+                           extra={"Content-Disposition": f'attachment; filename="{filename}"'})
                 return
 
             prefix = "/api/sessions/"

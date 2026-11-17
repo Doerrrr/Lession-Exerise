@@ -18,6 +18,7 @@ from .config import (
 SESSION_DIR = "sessions"
 CHECK_DIR = "checks"
 ARCHIVE_DIR = "archive"
+WORDBOOK_DIR = "wordbooks"
 
 
 def data_path(data_dir: str | Path) -> Path:
@@ -26,7 +27,7 @@ def data_path(data_dir: str | Path) -> Path:
 
 def ensure_dirs(data_dir: str | Path) -> Path:
     root = data_path(data_dir)
-    for name in (SESSION_DIR, CHECK_DIR, ARCHIVE_DIR):
+    for name in (SESSION_DIR, CHECK_DIR, ARCHIVE_DIR, WORDBOOK_DIR):
         (root / name).mkdir(parents=True, exist_ok=True)
     return root
 
