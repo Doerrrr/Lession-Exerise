@@ -11,6 +11,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sys
 import threading
@@ -67,7 +68,7 @@ def ensure_seed_file(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(seed, target)
 
-from dictation import __version__, ai, mysql, wordbooks  # noqa: E402
+from dictation import __version__, ai, mysql, mysql_user, wordbooks  # noqa: E402
 from dictation.checking import (  # noqa: E402
     apply_result,
     book_counts,
@@ -113,12 +114,16 @@ class ApiError(Exception):
 
 
 class App:
-    def __init__(self, data_dir: Path, web_dir: Path):
+    def __init__(self, data_dir: Path, web_dir: Path, owner: str = "local"):
         self.data_dir = data_dir.resolve()
         self.web_dir = web_dir.resolve()
+        self.owner = owner
         ensure_dirs(self.data_dir)
         self.words = WordRepository(self.data_dir)
-        self.mysql = mysql.MySQLStore(self.data_dir)
+        if owner == "local":
+            self.mysql = mysql.MySQLStore(self.data_dir)
+        else:
+            self.mysql = mysql_user.UserMySQLStore(self.data_dir, owner)
         self.lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -705,7 +710,117 @@ class App:
         return result
 
 
-def make_handler(app: App):
+class AppProxy:
+    def __init__(self, context: "ServerContext"):
+        self.context = context
+
+    @property
+    def web_dir(self) -> Path:
+        return self.context.web_dir
+
+    def __getattr__(self, name: str):
+        current = self.context.current_app()
+        if current is None:
+            raise AttributeError(name)
+        return getattr(current, name)
+
+
+class LocalContext:
+    def __init__(self, app: App):
+        self.app = app
+        self.server_mode = False
+        self.web_dir = app.web_dir
+
+    def me(self, token: str | None) -> dict[str, Any]:
+        return {"mode": "local", "authenticated": True, "username": "local"}
+
+    def set_user(self, username: str) -> None:
+        return None
+
+    def login(self, username: str, password: str):
+        return None
+
+    def logout(self, token: str | None) -> None:
+        return None
+
+
+class ServerContext:
+    def __init__(self, data_dir: str | Path, web_dir: str | Path):
+        self.data_dir = Path(data_dir).resolve()
+        self.web_dir = Path(web_dir).resolve()
+        self.server_mode = True
+        self.apps: dict[str, App] = {}
+        self.tls = threading.local()
+        self.app = AppProxy(self)
+
+    def current_app(self) -> App | None:
+        user = getattr(self.tls, "username", None)
+        return self.app_for(user) if user else None
+
+    def set_user(self, username: str) -> None:
+        self.tls.username = username
+
+    def app_for(self, username: str) -> App:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(username or ""))[:64] or "user"
+        if safe in self.apps:
+            return self.apps[safe]
+        user_dir = self.data_dir / "users" / safe
+        ensure_dirs(user_dir)
+        for name in ("words.json", "mysql.json"):
+            source = self.data_dir / name
+            target = user_dir / name
+            if source.exists() and not target.exists():
+                shutil.copyfile(source, target)
+        app = App(user_dir, self.web_dir, owner=username)
+        self.apps[safe] = app
+        return app
+
+    def me(self, token: str | None) -> dict[str, Any]:
+        user = mysql.resolve_auth_token(self.data_dir, token or "")
+        return {
+            "mode": "server",
+            "authenticated": bool(user),
+            "username": user or "",
+        }
+
+    def login(self, username: str, password: str):
+        user = mysql.authenticate(self.data_dir, username, password)
+        if not user:
+            return None
+        token = mysql.create_auth_token(self.data_dir, user["username"])
+        return user, token
+
+    def logout(self, token: str | None) -> None:
+        mysql.delete_auth_token(self.data_dir, token or "")
+
+
+def _session_token(handler: BaseHTTPRequestHandler) -> str | None:
+    cookie = handler.headers.get("Cookie") or ""
+    for part in cookie.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "dictation_session" and value:
+            return value
+    return None
+
+
+def _cookie_header(token: str | None, max_age: int = 30 * 24 * 3600, secure: bool = False) -> str:
+    if not token:
+        value = "dictation_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    else:
+        value = (
+            f"dictation_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        )
+    if secure:
+        value += "; Secure"
+    return value
+
+
+def _is_https(handler: BaseHTTPRequestHandler) -> bool:
+    return (handler.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+
+def make_handler(app: App, context: Any = None):
+    ctx = context or LocalContext(app)
     class Handler(BaseHTTPRequestHandler):
         server_version = f"Dictation/{__version__}"
         protocol_version = "HTTP/1.1"
@@ -728,7 +843,44 @@ def make_handler(app: App):
             path = urllib.parse.unquote(parsed.path)
             query = urllib.parse.parse_qs(parsed.query)
             try:
+                token = _session_token(self)
+                if path == "/api/health" and method == "GET":
+                    self._json(200, {"ok": True, "version": __version__})
+                    return
+                if path == "/api/auth/me" and method == "GET":
+                    self._json(200, ctx.me(token))
+                    return
+                if path == "/api/auth/login" and method == "POST":
+                    if not ctx.server_mode:
+                        raise ApiError(400, "本地模式不需要登录")
+                    body = self._body()
+                    result = ctx.login(
+                        str(body.get("username") or ""),
+                        str(body.get("password") or ""),
+                    )
+                    if not result:
+                        raise ApiError(401, "账号或密码错误，或账号已被禁用")
+                    user, auth_token = result
+                    self._json(
+                        200,
+                        {"ok": True, "mode": "server", "username": user["username"]},
+                        extra={"Set-Cookie": _cookie_header(auth_token, secure=_is_https(self))},
+                    )
+                    return
+                if path == "/api/auth/logout" and method == "POST":
+                    ctx.logout(token)
+                    self._json(
+                        200,
+                        {"ok": True},
+                        extra={"Set-Cookie": _cookie_header(None, secure=_is_https(self))},
+                    )
+                    return
                 if path.startswith("/api/"):
+                    if ctx.server_mode:
+                        me = ctx.me(token)
+                        if not me["authenticated"]:
+                            raise ApiError(401, "请先登录")
+                        ctx.set_user(me["username"])
                     self._api(method, path, query)
                 elif method == "GET":
                     self._static(path)
@@ -879,9 +1031,9 @@ def make_handler(app: App):
                 raise ApiError(400, "请求体必须是 JSON 对象")
             return data
 
-        def _json(self, status: int, payload: Any) -> None:
+        def _json(self, status: int, payload: Any, *, extra: dict[str, str] | None = None) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self._bytes(status, body, "application/json; charset=utf-8")
+            self._bytes(status, body, "application/json; charset=utf-8", extra=extra)
 
         def _text(self, status: int, text: str, content_type: str, *, extra: dict[str, str] | None = None) -> None:
             self._bytes(status, text.encode("utf-8"), content_type, extra=extra)
@@ -931,17 +1083,36 @@ def main() -> int:
     if not (web_dir / "index.html").exists():
         print(f"找不到前端文件：{web_dir / 'index.html'}", file=sys.stderr)
         return 1
+    server_config: dict[str, Any] = {}
     try:
-        app = App(data_dir, web_dir)
+        if (data_dir / "server.json").exists():
+            server_config = json.loads((data_dir / "server.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        server_config = {}
+    server_mode = str(server_config.get("mode") or "").lower() == "server"
+    try:
+        if server_mode:
+            context = ServerContext(data_dir, web_dir)
+            handler = make_handler(context.app, context)
+        else:
+            local_owner = mysql.load_mysql_settings(data_dir).get("owner") or "local"
+            app = App(data_dir, web_dir, owner=local_owner)
+            context = LocalContext(app)
+            handler = make_handler(app, context)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
     port = find_port(args.host, args.port)
-    server = ThreadingHTTPServer((args.host, port), make_handler(app))
+    server = ThreadingHTTPServer((args.host, port), handler)
     server.daemon_threads = True
     url = f"http://127.0.0.1:{port}"
     print(f"听写本 running at {url}")
+    if server_mode:
+        print("模式: server（需要登录；账号由管理员写入 dictation_users）")
+        print("用户数据目录: data/users/<username>")
+    else:
+        print("模式: local（无需登录）")
     print(f"数据目录: {data_dir}")
     print("Ctrl+C 停止服务")
     if args.open and not args.no_open:

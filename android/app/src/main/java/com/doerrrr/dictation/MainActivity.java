@@ -1,15 +1,18 @@
 package com.doerrrr.dictation;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
@@ -19,6 +22,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -33,8 +38,12 @@ import java.util.Locale;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 1001;
+    private static final String DEFAULT_SERVER = "http://123.207.184.26:8765";
+    private static final String PREFS = "dictation";
+    private static final String KEY_SERVER = "server_url";
 
     private WebView webView;
+    private SharedPreferences prefs;
     private TextToSpeech tts;
     private boolean ttsInitialized = false;
     private boolean ttsReady = false;
@@ -57,25 +66,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        setupWebView();
+        showStartDialog();
+    }
 
-        if (!Python.isStarted()) {
-            Python.start(new AndroidPlatform(this));
-        }
-
-        int port;
-        try {
-            port = Python.getInstance()
-                    .getModule("android_server")
-                    .callAttr("start", getFilesDir().getAbsolutePath())
-                    .toJava(int.class);
-        } catch (Exception exc) {
-            TextView error = new TextView(this);
-            error.setPadding(48, 96, 48, 48);
-            error.setText("Python 服务启动失败：\n" + exc);
-            setContentView(error);
-            return;
-        }
-
+    private void setupWebView() {
+        if (webView != null) return;
         webView = new WebView(this);
         webView.setBackgroundColor(0xFFF6F1E7);
         WebSettings settings = webView.getSettings();
@@ -133,11 +130,76 @@ public class MainActivity extends Activity {
 
         setContentView(webView);
         initTts();
-        webView.loadUrl("http://127.0.0.1:" + port + "/");
+    }
+
+    private void showStartDialog() {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(prefs.getString(KEY_SERVER, DEFAULT_SERVER));
+        input.setHint(DEFAULT_SERVER);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(48, 16, 48, 0);
+        layout.addView(input);
+
+        new AlertDialog.Builder(this)
+                .setTitle("听写本")
+                .setMessage("连接服务器使用账号数据；本地模式使用本机离线数据。")
+                .setView(layout)
+                .setCancelable(false)
+                .setPositiveButton("连接服务器", (dialog, which) -> {
+                    String url = input.getText().toString().trim();
+                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                        url = "http://" + url;
+                    }
+                    if (url.isEmpty()) url = DEFAULT_SERVER;
+                    prefs.edit().putString(KEY_SERVER, url).apply();
+                    setupWebView();
+                    webView.loadUrl(url);
+                })
+                .setNegativeButton("本地模式", (dialog, which) -> {
+                    prefs.edit().putString(KEY_SERVER, "").apply();
+                    startLocal();
+                })
+                .show();
+    }
+
+    private void startLocal() {
+        setupWebView();
+        try {
+            if (!Python.isStarted()) {
+                Python.start(new AndroidPlatform(this));
+            }
+            int port = Python.getInstance()
+                    .getModule("android_server")
+                    .callAttr("start", getFilesDir().getAbsolutePath())
+                    .toJava(int.class);
+            webView.loadUrl("http://127.0.0.1:" + port + "/");
+        } catch (Exception exc) {
+            TextView error = new TextView(this);
+            error.setPadding(48, 96, 48, 48);
+            error.setText("Python 服务启动失败：\n" + exc);
+            setContentView(error);
+        }
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        menu.add("切换服务器 / 本地模式");
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        showStartDialog();
+        return true;
     }
 
     private boolean openExternally(String url) {
-        if (url.startsWith("http://127.0.0.1:")) {
+        if (url.startsWith("http://127.0.0.1:") || url.startsWith("http://localhost:")) {
+            return false;
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
             return false;
         }
         try {
@@ -180,28 +242,15 @@ public class MainActivity extends Activity {
                 failPending();
                 return;
             }
-
             int language = tts.setLanguage(Locale.US);
-            if (isMissingLanguage(language)) {
-                language = tts.setLanguage(Locale.UK);
-            }
-            if (isMissingLanguage(language)) {
-                language = tts.setLanguage(Locale.ENGLISH);
-            }
-            if (isMissingLanguage(language)) {
-                language = tts.setLanguage(Locale.getDefault());
-            }
+            if (isMissingLanguage(language)) language = tts.setLanguage(Locale.UK);
+            if (isMissingLanguage(language)) language = tts.setLanguage(Locale.ENGLISH);
+            if (isMissingLanguage(language)) language = tts.setLanguage(Locale.getDefault());
             if (isMissingLanguage(language)) {
                 ttsReady = false;
                 ttsError = "系统没有可用的语音数据；请在系统设置 → 文字转语音中安装英文语音。";
                 failPending();
                 return;
-            }
-
-            Locale current = tts.getLanguage();
-            if (current != null && !current.getLanguage().equals("en")) {
-                ttsError = "";
-                // Still allow playback; the engine may pronounce English with its default voice.
             }
             AudioAttributes attrs = new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -298,12 +347,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == FILE_CHOOSER) {
-            if (filePathCallback != null) {
-                filePathCallback.onReceiveValue(
-                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
-                filePathCallback = null;
-            }
+        if (requestCode == FILE_CHOOSER && filePathCallback != null) {
+            filePathCallback.onReceiveValue(
+                    WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+            filePathCallback = null;
         }
     }
 
@@ -357,7 +404,7 @@ public class MainActivity extends Activity {
                     startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
                 } catch (Exception exc) {
                     try {
-                        startActivity(new Intent(Settings.ACTION_SETTINGS));
+                        startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));
                     } catch (Exception ignored) {
                     }
                 }

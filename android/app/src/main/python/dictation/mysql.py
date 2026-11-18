@@ -10,7 +10,8 @@ the connection is tested, settings are enabled, or a sync is requested.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,7 @@ def load_mysql_settings(data_dir: str | Path) -> dict[str, Any]:
         "password": str(raw.get("password") or ""),
         "database": str(raw.get("database") or DEFAULT_DATABASE),
         "enabled": bool(raw.get("enabled")),
+        "owner": str(raw.get("owner") or "local"),
         "last_sync": str(raw.get("last_sync") or ""),
         "last_error": str(raw.get("last_error") or ""),
         "last_counts": raw.get("last_counts") or {},
@@ -89,6 +91,7 @@ def mysql_status(data_dir: str | Path) -> dict[str, Any]:
         "port": settings["port"],
         "user": settings["user"],
         "database": settings["database"],
+        "owner": settings["owner"],
         "masked_password": _mask_password(settings["password"]),
         "last_sync": settings["last_sync"],
         "last_error": settings["last_error"],
@@ -105,6 +108,7 @@ def save_mysql_settings(
     password: str | None = None,
     database: str | None = None,
     enabled: bool | None = None,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     current = load_mysql_settings(data_dir)
     if host is not None and str(host).strip():
@@ -122,6 +126,8 @@ def save_mysql_settings(
         current["database"] = str(database).strip()
     if enabled is not None:
         current["enabled"] = bool(enabled)
+    if owner is not None and str(owner).strip():
+        current["owner"] = str(owner).strip()[:64]
     payload = {
         "host": current["host"],
         "port": current["port"],
@@ -129,6 +135,7 @@ def save_mysql_settings(
         "password": current["password"],
         "database": current["database"],
         "enabled": current["enabled"],
+        "owner": current.get("owner", "local"),
         "last_sync": current.get("last_sync", ""),
         "last_error": current.get("last_error", ""),
         "last_counts": current.get("last_counts") or {},
@@ -152,6 +159,7 @@ def _record(data_dir: str | Path, *, error: str | None = None, counts: dict | No
         "password": current["password"],
         "database": current["database"],
         "enabled": current["enabled"],
+        "owner": current.get("owner", "local"),
         "last_sync": current.get("last_sync", ""),
         "last_error": current.get("last_error", ""),
         "last_counts": current.get("last_counts") or {},
@@ -217,6 +225,23 @@ SCHEMA = [
         word_count INT NOT NULL DEFAULT 0,
         payload JSON NOT NULL,
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS dictation_users (
+        username VARCHAR(64) NOT NULL PRIMARY KEY,
+        password VARCHAR(255) NOT NULL,
+        enabled TINYINT NOT NULL DEFAULT 1,
+        created_at VARCHAR(40) NOT NULL DEFAULT ''
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS dictation_auth_sessions (
+        token VARCHAR(128) NOT NULL PRIMARY KEY,
+        username VARCHAR(64) NOT NULL,
+        created_at VARCHAR(40) NOT NULL DEFAULT '',
+        expires_at VARCHAR(40) NOT NULL DEFAULT '',
+        KEY idx_auth_username (username)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 ]
@@ -611,3 +636,109 @@ def _loads(value: Any) -> dict[str, Any]:
         if isinstance(data, dict):
             return data
     return {}
+
+
+# ---------------------------------------------------------------------------
+# accounts / auth (server mode)
+# ---------------------------------------------------------------------------
+
+def _auth_connect(data_dir: str | Path):
+    store = MySQLStore(data_dir)
+    conn = store._connect()
+    store._ensure_schema(conn)
+    return conn
+
+
+def authenticate(data_dir: str | Path, username: str, password: str) -> dict[str, Any] | None:
+    """Plain-text password check (per project requirement)."""
+    username = str(username or "").strip()
+    if not username:
+        return None
+    conn = _auth_connect(data_dir)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT username, password, enabled, created_at FROM dictation_users WHERE username = %s",
+                (username,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    db_user, db_password, enabled, created_at = row
+    if not int(enabled or 0):
+        return None
+    if str(db_password or "") != str(password or ""):
+        return None
+    return {
+        "username": str(db_user),
+        "enabled": True,
+        "created_at": str(created_at or ""),
+    }
+
+
+def create_auth_token(data_dir: str | Path, username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now()
+    expires = now + timedelta(days=30)
+    conn = _auth_connect(data_dir)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM dictation_auth_sessions WHERE expires_at <> '' AND expires_at < %s",
+                (now.isoformat(timespec="seconds"),),
+            )
+            cur.execute(
+                "INSERT INTO dictation_auth_sessions (token, username, created_at, expires_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (token, str(username), now.isoformat(timespec="seconds"),
+                 expires.isoformat(timespec="seconds")),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return token
+
+
+def resolve_auth_token(data_dir: str | Path, token: str) -> str | None:
+    token = str(token or "").strip()
+    if not token:
+        return None
+    conn = _auth_connect(data_dir)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT s.username, s.expires_at, u.enabled "
+                "FROM dictation_auth_sessions s LEFT JOIN dictation_users u ON u.username = s.username "
+                "WHERE s.token = %s",
+                (token,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    username, expires_at, enabled = row
+    if enabled is None or not int(enabled or 0):
+        return None
+    if expires_at:
+        try:
+            if datetime.fromisoformat(str(expires_at)) < datetime.now():
+                return None
+        except ValueError:
+            return None
+    return str(username)
+
+
+def delete_auth_token(data_dir: str | Path, token: str) -> None:
+    token = str(token or "").strip()
+    if not token:
+        return
+    conn = _auth_connect(data_dir)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM dictation_auth_sessions WHERE token = %s", (token,))
+        conn.commit()
+    finally:
+        conn.close()

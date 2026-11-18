@@ -844,6 +844,9 @@ def make_handler(app: App, context: Any = None):
             query = urllib.parse.parse_qs(parsed.query)
             try:
                 token = _session_token(self)
+                if path == "/api/health" and method == "GET":
+                    self._json(200, {"ok": True, "version": __version__})
+                    return
                 if path == "/api/auth/me" and method == "GET":
                     self._json(200, ctx.me(token))
                     return
@@ -1092,7 +1095,8 @@ def main() -> int:
             context = ServerContext(data_dir, web_dir)
             handler = make_handler(context.app, context)
         else:
-            app = App(data_dir, web_dir)
+            local_owner = mysql.load_mysql_settings(data_dir).get("owner") or "local"
+            app = App(data_dir, web_dir, owner=local_owner)
             context = LocalContext(app)
             handler = make_handler(app, context)
     except FileNotFoundError as exc:

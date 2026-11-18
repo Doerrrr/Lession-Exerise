@@ -69,6 +69,7 @@ def load_mysql_settings(data_dir: str | Path) -> dict[str, Any]:
         "password": str(raw.get("password") or ""),
         "database": str(raw.get("database") or DEFAULT_DATABASE),
         "enabled": bool(raw.get("enabled")),
+        "owner": str(raw.get("owner") or "local"),
         "last_sync": str(raw.get("last_sync") or ""),
         "last_error": str(raw.get("last_error") or ""),
         "last_counts": raw.get("last_counts") or {},
@@ -90,6 +91,7 @@ def mysql_status(data_dir: str | Path) -> dict[str, Any]:
         "port": settings["port"],
         "user": settings["user"],
         "database": settings["database"],
+        "owner": settings["owner"],
         "masked_password": _mask_password(settings["password"]),
         "last_sync": settings["last_sync"],
         "last_error": settings["last_error"],
@@ -106,6 +108,7 @@ def save_mysql_settings(
     password: str | None = None,
     database: str | None = None,
     enabled: bool | None = None,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     current = load_mysql_settings(data_dir)
     if host is not None and str(host).strip():
@@ -123,6 +126,8 @@ def save_mysql_settings(
         current["database"] = str(database).strip()
     if enabled is not None:
         current["enabled"] = bool(enabled)
+    if owner is not None and str(owner).strip():
+        current["owner"] = str(owner).strip()[:64]
     payload = {
         "host": current["host"],
         "port": current["port"],
@@ -130,6 +135,7 @@ def save_mysql_settings(
         "password": current["password"],
         "database": current["database"],
         "enabled": current["enabled"],
+        "owner": current.get("owner", "local"),
         "last_sync": current.get("last_sync", ""),
         "last_error": current.get("last_error", ""),
         "last_counts": current.get("last_counts") or {},
@@ -153,6 +159,7 @@ def _record(data_dir: str | Path, *, error: str | None = None, counts: dict | No
         "password": current["password"],
         "database": current["database"],
         "enabled": current["enabled"],
+        "owner": current.get("owner", "local"),
         "last_sync": current.get("last_sync", ""),
         "last_error": current.get("last_error", ""),
         "last_counts": current.get("last_counts") or {},

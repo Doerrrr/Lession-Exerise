@@ -1,6 +1,6 @@
 # 听写本
 
-> 当前版本：v0.4.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.4.1 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
@@ -28,7 +28,7 @@
 ## 下载
 
 - **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.2-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.2/Dictation-v0.3.2-win64.exe)
-- **Android APK**（Android 8+，arm64；含 MySQL 设置）：[Dictation-v0.3.2-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.2/Dictation-v0.3.2-android.apk)
+- **Android APK**（Android 8+，arm64；含 MySQL 设置）：[Dictation-v0.4.1-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.4.1/Dictation-v0.4.1-android.apk)
 
 EXE 首次运行会在 exe 旁边创建 `data/`；如果目录不可写会改用 `%APPDATA%\Dictation\data`。APK 是自签名安装包，需要在系统里允许「安装未知来源应用」；数据保存在应用私有目录。
 
