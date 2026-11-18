@@ -8,7 +8,7 @@ This is a thin Android shell around the same local Python server and Web UI.
 - The manifest declares `android.intent.action.TTS_SERVICE` in `<queries>` for Android 11+ package visibility. TTS calls are queued until initialization; the app tries en-US → en-GB → en → system default, and reports detailed errors.
 - If playback fails, in the app open Settings → 语音诊断 → 打开系统语音设置, install/enable Google Text-to-Speech and English voice data; then press 试听 again.
 - Bluetooth/headphone keep-alive is implemented in the Web UI (inaudible low-frequency Web Audio) and works with the native TTS media audio attributes.
-- The optional MySQL sync is available in the same Settings card. On Android, `127.0.0.1` means the phone itself; to use the PC's MySQL, set the PC LAN IP and allow remote MySQL connections. The app still works with local JSON if MySQL is unreachable.
+- The optional MySQL sync is available in the same Settings card. The APK bundles PyMySQL (pure Python) so it can connect directly to a MySQL 5.7 server using `mysql_native_password`. On Android, `127.0.0.1` means the phone itself; use the server's public/LAN IP. The app still works with local JSON if MySQL is unreachable.
 
 ## Build
 

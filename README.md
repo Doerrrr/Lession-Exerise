@@ -28,7 +28,7 @@
 ## 下载
 
 - **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.2-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.2/Dictation-v0.3.2-win64.exe)
-- **Android APK**（Android 8+，arm64；TTS 修复版）：[Dictation-v0.3.1-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-android.apk)
+- **Android APK**（Android 8+，arm64；含 MySQL 设置）：[Dictation-v0.3.2-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.2/Dictation-v0.3.2-android.apk)
 
 EXE 首次运行会在 exe 旁边创建 `data/`；如果目录不可写会改用 `%APPDATA%\Dictation\data`。APK 是自签名安装包，需要在系统里允许「安装未知来源应用」；数据保存在应用私有目录。
 
@@ -179,7 +179,11 @@ dictation_resets        word, reset_at
 dictation_wordbooks     id, name, created_at, word_count, payload JSON
 ```
 
-`payload` 是完整 JSON，方便恢复和直接查询。数据库密码只保存在本机 `data/mysql.json`，不会回传浏览器；这个文件已被 `.gitignore` 排除。Android 应用里的 `127.0.0.1` 指手机自己，不是电脑；如果要在 Android 上连电脑的 MySQL，需要把 Host 改成电脑局域网 IP，并让 MySQL 允许远程连接。
+`payload` 是完整 JSON，方便恢复和直接查询。数据库密码只保存在本机 `data/mysql.json`，不会回传浏览器；这个文件已被 `.gitignore` 排除。
+
+手机端（v0.3.2 APK）也可以设置：设置 → MySQL 同步，填服务器地址/用户/密码/数据库，保存并「测试连接」。如果电脑已经同步过数据，手机上点 **「从 MySQL 恢复」** 把服务器数据拉到手机；**不要**一上来点「同步到 MySQL」，那会用手机本地数据覆盖服务器。之后开启自动同步。
+
+注意：Android 应用里的 `127.0.0.1` 指手机自己，不是电脑；连服务器请填服务器公网 IP。MySQL 5.7 可直接使用（采用 `mysql_native_password`，PyMySQL 可连接；5.7 的 `JSON` 列也支持）。
 
 ## 数据文件
 
