@@ -72,6 +72,16 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 - 相关接口：`PUT /api/mysql/settings`、`POST /api/mysql/test`、`POST /api/mysql/sync`、`POST /api/mysql/restore`。
 - Android 应用里的 `127.0.0.1` 是手机自己；要连电脑的 MySQL 必须用电脑局域网 IP，并让 MySQL 允许远程连接。
 
+## 服务器模式 / 账号
+
+- 本地模式：无登录，JSON + 可选 MySQL 镜像。
+- 服务器模式：`data/server.json` 为 `{"mode":"server"}`；`data/mysql.json` 指向服务器 MySQL；启动 `--host 0.0.0.0`。
+- 账号在 `dictation_users`（username/password 明文/enabled/created_at），**没有注册页**；管理员手工插入。
+- 登录成功发 `dictation_session` HttpOnly Cookie，token 在 `dictation_auth_sessions`；未登录访问 `/api/` 返回 401。
+- 每个账号独立目录 `data/users/<username>/`，数据表按 `owner` 隔离；同一账号手机/电脑共享。
+- 服务器模式必须登录；本地模式免登录。
+- 密码按用户要求明文存储，公网部署必须 HTTPS；不要打印登录密码或 `data/mysql.json`。
+
 ## AI 判卷（DeepSeek）
 
 - 应用内点「AI 判卷」；检查记录带 `"engine": "deepseek"`、`model` 和每题 `reason`。

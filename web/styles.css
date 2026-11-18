@@ -717,6 +717,32 @@ input[type="range"] { width: 100%; accent-color: var(--green); }
 .wordbook-item .meta { color: var(--muted); font-size: 11px; line-height: 1.6; }
 .wordbook-card a { color: var(--green); text-decoration: underline; }
 .field input[type="file"] { padding: 8px; font-size: 12px; }
+
+/* login (server mode) */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(246, 241, 231, 0.96);
+  backdrop-filter: blur(6px);
+}
+.login-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid #e8ddca;
+  border-radius: 20px;
+  background: #fffdf8;
+  box-shadow: 0 24px 70px rgba(65, 50, 30, 0.14);
+}
+.login-card h1 { margin: 6px 0 8px; font-size: 28px; }
+.login-card .field { margin-top: 12px; }
+.login-card .primary { width: 100%; margin-top: 16px; }
+.login-card .warn { color: #a33b2e; min-height: 1.2em; }
+#login-overlay.hidden { display: none; }
 .batch-dialog { width: min(680px, 94vw); }
 .batch-body { padding: 18px 20px 20px; }
 #batch-text {

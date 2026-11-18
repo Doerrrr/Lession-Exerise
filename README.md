@@ -1,6 +1,6 @@
 # 听写本
 
-> 当前版本：v0.3.2 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.4.0 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
@@ -184,6 +184,26 @@ dictation_wordbooks     id, name, created_at, word_count, payload JSON
 手机端（v0.3.2 APK）也可以设置：设置 → MySQL 同步，填服务器地址/用户/密码/数据库，保存并「测试连接」。如果电脑已经同步过数据，手机上点 **「从 MySQL 恢复」** 把服务器数据拉到手机；**不要**一上来点「同步到 MySQL」，那会用手机本地数据覆盖服务器。之后开启自动同步。
 
 注意：Android 应用里的 `127.0.0.1` 指手机自己，不是电脑；连服务器请填服务器公网 IP。MySQL 5.7 可直接使用（采用 `mysql_native_password`，PyMySQL 可连接；5.7 的 `JSON` 列也支持）。
+
+## 服务器模式（多账号）
+
+默认仍是本地模式（免登录、JSON）。部署到服务器时可选多账号模式：
+
+1. 在 `data/mysql.json` 填服务器 MySQL（建议专用 MySQL 用户，不要用 root）。
+2. 在 `data/server.json` 写 `{"mode":"server"}`。
+3. 启动 `python server.py --host 0.0.0.0 --port 8765`。
+4. 在 MySQL 的 `dictation_users` 里加账号（没有注册页）：
+
+   ```sql
+   INSERT INTO dictation_users (username, password, enabled, created_at)
+   VALUES ('alice', 'alice-pass', 1, NOW());
+   ```
+
+- 登录后每个账号的数据在 `data/users/<username>/`，并同步到 MySQL 的 `owner` 行；账号之间互相看不到。
+- 密码按需求明文存储；公网部署务必套 HTTPS（Nginx/Caddy），并在反向代理里传 `X-Forwarded-Proto: https`。
+- 手机、电脑都用浏览器打开服务器地址，登录同一个账号即可共享数据。
+- `dictation_users` / `dictation_auth_sessions` 由程序自动建表；账号由管理员手工增加。
+- 本地模式/EXE/APK 仍是免登录本地数据，不受服务器账号影响。
 
 ## 数据文件
 

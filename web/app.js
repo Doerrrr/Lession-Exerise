@@ -31,6 +31,7 @@ const state = {
   recent: [],
   pending: [],
   ai: { configured: false, model: 'deepseek-chat', base_url: 'https://api.deepseek.com', masked_key: '' },
+  auth: { mode: 'local', authenticated: true, username: 'local' },
   mysql: {},
   wordbooks: [],
   voices: [],
@@ -142,9 +143,14 @@ async function api(path, options = {}) {
   const response = await fetch(path, opts);
   const text = await response.text();
   let data = null;
-  if (text) {
-    try { data = JSON.parse(text); }
-    catch (err) { data = { error: text }; }
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (err) {
+    data = null;
+  }
+  if (response.status === 401 && path !== '/api/auth/me' && path !== '/api/auth/login') {
+    showLogin();
+    throw new Error((data && data.error) || '请先登录');
   }
   if (!response.ok) {
     throw new Error((data && data.error) || `请求失败（${response.status}）`);
@@ -192,8 +198,84 @@ async function init() {
   setSeed(randomSeed());
   loadVoices();
   setTimeout(loadVoices, 900);
+  await loadAuth();
+  if (state.auth.mode === 'server' && !state.auth.authenticated) {
+    showLogin();
+    return;
+  }
+  hideLogin();
+  renderAccount();
   await loadState();
   showView('setup');
+}
+
+async function loadAuth() {
+  try {
+    const data = await fetch('/api/auth/me', { headers: { Accept: 'application/json' } }).then((r) => r.json());
+    state.auth = {
+      mode: data.mode || 'local',
+      authenticated: Boolean(data.authenticated),
+      username: data.username || '',
+    };
+  } catch (err) {
+    state.auth = { mode: 'local', authenticated: true, username: 'local' };
+  }
+}
+
+function showLogin() {
+  const overlay = $('#login-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  setTimeout(() => $('#login-username')?.focus(), 50);
+}
+
+function hideLogin() {
+  $('#login-overlay')?.classList.add('hidden');
+}
+
+function renderAccount() {
+  const name = $('#account-name');
+  const logoutBtn = $('#logout-btn');
+  if (!name || !logoutBtn) return;
+  if (state.auth.mode === 'server' && state.auth.authenticated) {
+    name.hidden = false;
+    name.textContent = `账号 ${state.auth.username}`;
+    logoutBtn.hidden = false;
+  } else {
+    name.hidden = true;
+    logoutBtn.hidden = true;
+  }
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const error = $('#login-error');
+  if (error) error.textContent = '';
+  const username = $('#login-username').value.trim();
+  const password = $('#login-password').value;
+  if (!username || !password) {
+    if (error) error.textContent = '请输入账号和密码';
+    return;
+  }
+  try {
+    const data = await api('/api/auth/login', { method: 'POST', body: { username, password } });
+    if (data && data.ok) {
+      window.location.reload();
+      return;
+    }
+    if (error) error.textContent = '登录失败';
+  } catch (err) {
+    if (error) error.textContent = err.message;
+  }
+}
+
+async function logout() {
+  try {
+    await api('/api/auth/logout', { method: 'POST' });
+  } catch (err) {
+    /* ignore */
+  }
+  window.location.reload();
 }
 
 async function loadState() {
@@ -2003,6 +2085,8 @@ async function resetAll() {
 /* events                                                              */
 /* ------------------------------------------------------------------ */
 function bindEvents() {
+  $('#login-form')?.addEventListener('submit', submitLogin);
+  $('#logout-btn')?.addEventListener('click', logout);
   document.addEventListener('click', (event) => {
     const nav = event.target.closest('[data-nav]');
     if (!nav) return;

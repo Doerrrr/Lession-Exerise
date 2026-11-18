@@ -8,6 +8,21 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+<div id="login-overlay" class="login-overlay hidden">
+  <form id="login-form" class="login-card">
+    <p class="eyebrow">服务器模式</p>
+    <h1>登录听写本</h1>
+    <p class="hint">登录后使用服务器数据。账号由管理员在数据库添加，不开放注册。</p>
+    <label class="field">账号
+      <input id="login-username" type="text" autocomplete="username" spellcheck="false" required>
+    </label>
+    <label class="field">密码
+      <input id="login-password" type="password" autocomplete="current-password" required>
+    </label>
+    <button id="login-submit" class="primary" type="submit">登录</button>
+    <p id="login-error" class="hint warn"></p>
+  </form>
+</div>
 <header class="topbar">
   <a class="brand" href="#" data-nav="setup">
     <span class="brand-mark">听</span>
@@ -23,6 +38,8 @@
     <span class="chip"><i class="dot new"></i>新词 <b id="stat-new">—</b></span>
     <span class="chip"><i class="dot wrong"></i>错题 <b id="stat-wrong">—</b></span>
     <span class="chip"><i class="dot done"></i>掌握 <b id="stat-mastered">—</b></span>
+    <span id="account-name" class="chip" hidden></span>
+    <button id="logout-btn" class="ghost mini" type="button" hidden>退出</button>
   </div>
 </header>
 
