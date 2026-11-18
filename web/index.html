@@ -323,6 +323,35 @@
         <p id="wordbook-import-hint" class="hint"></p>
         <div id="wordbook-list" class="wordbook-list"></div>
       </div>
+      <div class="paper-card mysql-card">
+        <div class="card-head"><h2>MySQL 同步（可选）</h2><span id="mysql-status" class="tag warm">未配置</span></div>
+        <p class="hint">JSON 仍是本机主存储；这里把 sessions / checks / answers / settings / wordbooks 同步到 MySQL，方便查询或换机恢复。密码只保存在本机，不回传浏览器。</p>
+        <div class="field-grid two">
+          <label class="field">Host
+            <input id="mysql-host" type="text" value="127.0.0.1" spellcheck="false">
+          </label>
+          <label class="field">端口
+            <input id="mysql-port" type="number" min="1" max="65535" value="3306" inputmode="numeric">
+          </label>
+          <label class="field">用户
+            <input id="mysql-user" type="text" value="root" spellcheck="false">
+          </label>
+          <label class="field">密码
+            <input id="mysql-password" type="password" placeholder="数据库密码" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">数据库
+            <input id="mysql-database" type="text" value="englishlisten" spellcheck="false">
+          </label>
+          <label class="switch mysql-enable"><input id="mysql-enabled" type="checkbox"><span></span>启用自动同步</label>
+        </div>
+        <div class="actions">
+          <button id="mysql-save" class="primary" type="button">保存</button>
+          <button id="mysql-test" class="ghost" type="button">测试连接</button>
+          <button id="mysql-sync" class="ghost" type="button">同步到 MySQL</button>
+          <button id="mysql-restore" class="ghost" type="button">从 MySQL 恢复</button>
+        </div>
+        <p id="mysql-hint" class="hint"></p>
+      </div>
       <div class="paper-card danger-card">
         <div class="card-head"><h2>清空学习记录</h2></div>
         <p class="hint">会归档现有检查记录，新词本回到全部单词；历史场次和答题纸保留。</p>

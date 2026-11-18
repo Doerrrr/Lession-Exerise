@@ -67,7 +67,7 @@ def ensure_seed_file(data_dir: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(seed, target)
 
-from dictation import __version__, ai, wordbooks  # noqa: E402
+from dictation import __version__, ai, mysql, wordbooks  # noqa: E402
 from dictation.checking import (  # noqa: E402
     apply_result,
     book_counts,
@@ -118,6 +118,7 @@ class App:
         self.web_dir = web_dir.resolve()
         ensure_dirs(self.data_dir)
         self.words = WordRepository(self.data_dir)
+        self.mysql = mysql.MySQLStore(self.data_dir)
         self.lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -125,6 +126,16 @@ class App:
     # ------------------------------------------------------------------
     def settings(self) -> dict[str, Any]:
         return load_settings(self.data_dir)
+
+    def _mirror(self, method: str, *args: Any) -> None:
+        """Best-effort JSON -> MySQL mirror; never break the local app."""
+        try:
+            getattr(self.mysql, method)(*args)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                self.mysql.record_error(f"{method}: {exc}")
+            except Exception:
+                pass
 
     def progress(self, exclude_session_id: str | None = None):
         return build_progress(self.data_dir, exclude_session_id=exclude_session_id)
@@ -175,6 +186,7 @@ class App:
             "pending": pending_sessions(self.data_dir),
             "ai": ai.ai_status(self.data_dir),
             "wordbooks": self.words.custom_book_summaries(progress),
+            "mysql": self.mysql.status(),
         }
 
     # ------------------------------------------------------------------
@@ -251,6 +263,7 @@ class App:
             warnings.append(f"当前词库只有 {len(pool_all)} 个可用词，已按实际数量取池。")
         with self.lock:
             save_session(self.data_dir, session)
+        self._mirror("mirror_session", session)
         return {
             "session": self.public_session(session),
             "warnings": warnings,
@@ -285,6 +298,7 @@ class App:
         session["heard_count"] = max(int(session.get("heard_count") or 0), heard)
         with self.lock:
             save_session(self.data_dir, session)
+        self._mirror("mirror_session", session)
         return {"heard_count": session["heard_count"], "effective_heard": effective_heard(session)}
 
     def save_answers(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -310,6 +324,7 @@ class App:
             answers[str(n)] = text
         with self.lock:
             paths = save_answers(self.data_dir, session, answers)
+        self._mirror("mirror_answers", session_id, answers)
         return {
             "answers": answers,
             "paths": paths,
@@ -408,6 +423,7 @@ class App:
         }
         with self.lock:
             save_session(self.data_dir, new_session)
+        self._mirror("mirror_session", new_session)
         return {
             "session": self.public_session(new_session),
             "from_session": session_id,
@@ -462,6 +478,9 @@ class App:
             raise ApiError(502, str(exc))
         with self.lock:
             applied = apply_result(self.data_dir, session, result, self.words.catalog_total_count())
+        self._mirror("mirror_check", applied)
+        self._mirror("mirror_session", session)
+        self._mirror("mirror_answers", session_id, answers)
         detail = self.session_detail(session_id)
         return {
             "check": applied,
@@ -489,6 +508,7 @@ class App:
         except wordbooks.WordbookError as exc:
             raise ApiError(400, str(exc))
         self.words.reload_custom()
+        self._mirror("mirror_wordbook", book)
         progress = self.progress()
         return {
             "ok": True,
@@ -503,6 +523,7 @@ class App:
         except wordbooks.WordbookError as exc:
             raise ApiError(400, str(exc))
         self.words.reload_custom()
+        self._mirror("delete_wordbook", book_id)
         progress = self.progress()
         return {
             "ok": True,
@@ -618,13 +639,15 @@ class App:
         if scope == "all":
             with self.lock:
                 archived = archive_learning(self.data_dir)
+            self._mirror("sync_all")
             return {"ok": True, "archived": str(archived) if archived else None}
         if scope == "word":
             word = normalize_word_key(str(payload.get("word") or ""))
             if not word or not self.words.get(word):
                 raise ApiError(400, "找不到这个词")
             with self.lock:
-                reset_word(self.data_dir, word)
+                resets = reset_word(self.data_dir, word)
+            self._mirror("mirror_resets", resets)
             return {"ok": True, "word": word, "counts": self.counts()}
         raise ApiError(400, "scope 只能是 all 或 word")
 
@@ -638,7 +661,48 @@ class App:
         if not 1 <= threshold <= 20:
             raise ApiError(400, "掌握阈值需在 1–20 之间")
         settings = save_settings(self.data_dir, {"threshold": threshold})
+        self._mirror("mirror_settings", settings)
         return {"ok": True, "settings": settings, "counts": self.counts()}
+
+    # ------------------------------------------------------------------
+    # optional MySQL mirror
+    # ------------------------------------------------------------------
+    def update_mysql_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            status = self.mysql.save_settings(
+                host=payload.get("host"),
+                port=payload.get("port"),
+                user=payload.get("user"),
+                password=payload.get("password"),
+                database=payload.get("database"),
+                enabled=payload.get("enabled") if "enabled" in payload else None,
+            )
+        except ValueError as exc:
+            raise ApiError(400, str(exc))
+        return {"ok": True, "mysql": status}
+
+    def mysql_test(self) -> dict[str, Any]:
+        try:
+            return self.mysql.test()
+        except Exception as exc:  # noqa: BLE001
+            self._mirror("record_error", str(exc))
+            raise ApiError(502, f"MySQL 连接失败：{exc}")
+
+    def mysql_sync(self) -> dict[str, Any]:
+        try:
+            return self.mysql.sync_all()
+        except Exception as exc:  # noqa: BLE001
+            self._mirror("record_error", str(exc))
+            raise ApiError(502, f"MySQL 同步失败：{exc}")
+
+    def mysql_restore(self) -> dict[str, Any]:
+        try:
+            result = self.mysql.restore_all()
+        except Exception as exc:  # noqa: BLE001
+            self._mirror("record_error", str(exc))
+            raise ApiError(502, f"从 MySQL 恢复失败：{exc}")
+        self.words.reload_custom()
+        return result
 
 
 def make_handler(app: App):
@@ -723,6 +787,18 @@ def make_handler(app: App):
                 return
             if path == "/api/ai/test" and method == "POST":
                 self._json(200, app.ai_test())
+                return
+            if path == "/api/mysql/settings" and method == "PUT":
+                self._json(200, app.update_mysql_settings(self._body()))
+                return
+            if path == "/api/mysql/test" and method == "POST":
+                self._json(200, app.mysql_test())
+                return
+            if path == "/api/mysql/sync" and method == "POST":
+                self._json(200, app.mysql_sync())
+                return
+            if path == "/api/mysql/restore" and method == "POST":
+                self._json(200, app.mysql_restore())
                 return
             if path == "/api/wordbooks/import" and method == "POST":
                 self._json(200, app.wordbook_import(self._body()))

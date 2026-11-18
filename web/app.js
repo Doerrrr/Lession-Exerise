@@ -31,6 +31,7 @@ const state = {
   recent: [],
   pending: [],
   ai: { configured: false, model: 'deepseek-chat', base_url: 'https://api.deepseek.com', masked_key: '' },
+  mysql: {},
   wordbooks: [],
   voices: [],
   session: null,
@@ -206,6 +207,7 @@ async function loadState() {
     state.recent = data.recent_sessions || [];
     state.pending = data.pending || [];
     state.ai = data.ai || state.ai;
+    state.mysql = data.mysql || state.mysql;
     state.wordbooks = data.wordbooks || [];
     if (data.settings && data.settings.threshold) state.settings.threshold = data.settings.threshold;
     renderStats();
@@ -365,6 +367,7 @@ function renderSettings() {
       : '配置 API Key 后，答题页可以直接点「AI 判卷」自动判分；不配置也可以把答题纸发给我复核。';
   }
   renderWordbooks();
+  renderMysql();
 }
 
 /* ------------------------------------------------------------------ */
@@ -395,6 +398,124 @@ function renderWordbooks() {
         <button class="row-btn danger-text" type="button" data-delete-wordbook="${escapeHtml(book.id)}">删除</button>
       </div>`;
   }).join('');
+}
+
+function renderMysql() {
+  const info = state.mysql || {};
+  const status = $('#mysql-status');
+  if (status) {
+    if (!info.available) {
+      status.textContent = '驱动未安装';
+      status.className = 'tag warm';
+    } else if (info.enabled) {
+      status.textContent = '已启用';
+      status.className = 'tag';
+    } else if (info.configured) {
+      status.textContent = '已关闭';
+      status.className = 'tag warm';
+    } else {
+      status.textContent = '未配置';
+      status.className = 'tag warm';
+    }
+  }
+  const host = $('#mysql-host');
+  if (host) host.value = info.host || '127.0.0.1';
+  const port = $('#mysql-port');
+  if (port) port.value = String(info.port || 3306);
+  const user = $('#mysql-user');
+  if (user) user.value = info.user || 'root';
+  const database = $('#mysql-database');
+  if (database) database.value = info.database || 'englishlisten';
+  const password = $('#mysql-password');
+  if (password) {
+    password.value = '';
+    password.placeholder = info.configured ? '已配置，留空保持' : '数据库密码';
+  }
+  const enabled = $('#mysql-enabled');
+  if (enabled) enabled.checked = Boolean(info.enabled);
+
+  const hint = $('#mysql-hint');
+  if (hint) {
+    const parts = [];
+    if (!info.available) {
+      parts.push('当前运行环境没有 PyMySQL；安装后重启（pip install pymysql cryptography）。');
+    } else if (!info.configured) {
+      parts.push('填写数据库密码后保存。JSON 仍是主存储，MySQL 只是同步副本。');
+    } else {
+      parts.push(`驱动 ${info.driver || ''} · ${info.user}@${info.host}:${info.port}/${info.database}`);
+    }
+    if (info.last_sync) parts.push(`上次同步 ${info.last_sync}`);
+    const counts = info.counts || {};
+    if (counts.sessions != null) {
+      parts.push(`sessions ${counts.sessions} · checks ${counts.checks} · answers ${counts.answers} · wordbooks ${counts.wordbooks}`);
+    }
+    if (info.last_error) parts.push(`最近错误：${info.last_error}`);
+    hint.textContent = parts.join(' · ');
+  }
+  const sync = $('#mysql-sync');
+  if (sync) sync.disabled = !info.available || !info.configured;
+  const restore = $('#mysql-restore');
+  if (restore) restore.disabled = !info.available || !info.configured;
+}
+
+async function saveMysqlSettings() {
+  try {
+    const data = await api('/api/mysql/settings', {
+      method: 'PUT',
+      body: {
+        host: $('#mysql-host').value.trim(),
+        port: Number($('#mysql-port').value || 3306),
+        user: $('#mysql-user').value.trim(),
+        password: $('#mysql-password').value,
+        database: $('#mysql-database').value.trim(),
+        enabled: $('#mysql-enabled').checked,
+      },
+    });
+    state.mysql = data.mysql || state.mysql;
+    renderSettings();
+    toast('MySQL 设置已保存');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function testMysql() {
+  try {
+    const data = await api('/api/mysql/test', { method: 'POST' });
+    state.mysql = data.status || state.mysql;
+    renderSettings();
+    toast(`MySQL 连接正常：${data.database} · ${data.version}`);
+  } catch (err) {
+    toast(err.message, 'error');
+    await loadState();
+    renderSettings();
+  }
+}
+
+async function syncMysql() {
+  if (!window.confirm('用本机 JSON 覆盖 MySQL 中的同步表？')) return;
+  try {
+    const data = await api('/api/mysql/sync', { method: 'POST' });
+    state.mysql = data.status || state.mysql;
+    await loadState();
+    renderSettings();
+    toast(`已同步 ${data.counts.sessions} 轮、${data.counts.checks} 次检查、${data.counts.wordbooks} 个词本`);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function restoreMysql() {
+  if (!window.confirm('用 MySQL 覆盖本机 JSON？当前本机数据会被替换。')) return;
+  try {
+    const data = await api('/api/mysql/restore', { method: 'POST' });
+    state.mysql = data.status || state.mysql;
+    await loadState();
+    renderSettings();
+    toast(`已从 MySQL 恢复 ${data.counts.sessions} 轮、${data.counts.checks} 次检查`);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
 }
 
 async function importWordbook() {
@@ -2048,6 +2169,10 @@ function bindEvents() {
     const button = event.target.closest('[data-delete-wordbook]');
     if (button) deleteWordbook(button.dataset.deleteWordbook);
   });
+  $('#mysql-save').addEventListener('click', saveMysqlSettings);
+  $('#mysql-test').addEventListener('click', testMysql);
+  $('#mysql-sync').addEventListener('click', syncMysql);
+  $('#mysql-restore').addEventListener('click', restoreMysql);
 
   $('#book-tabs').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-book]');

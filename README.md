@@ -1,6 +1,6 @@
 # 听写本
 
-> 当前版本：v0.3.1 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
+> 当前版本：v0.3.2 · [Releases](https://github.com/Doerrrr/Lession-Exerise/releases)
 
 一个本地运行的「机器读单词、你写中文意思、AI 检查」的听写工具。
 
@@ -27,8 +27,8 @@
 
 ## 下载
 
-- **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.1-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-win64.exe)
-- **Android APK**（Android 8+，arm64）：[Dictation-v0.3.1-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-android.apk)
+- **Windows EXE**（免安装 Python，双击运行）：[Dictation-v0.3.2-win64.exe](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.2/Dictation-v0.3.2-win64.exe)
+- **Android APK**（Android 8+，arm64；TTS 修复版）：[Dictation-v0.3.1-android.apk](https://github.com/Doerrrr/Lession-Exerise/releases/download/v0.3.1/Dictation-v0.3.1-android.apk)
 
 EXE 首次运行会在 exe 旁边创建 `data/`；如果目录不可写会改用 `%APPDATA%\Dictation\data`。APK 是自签名安装包，需要在系统里允许「安装未知来源应用」；数据保存在应用私有目录。
 
@@ -159,6 +159,28 @@ data/sessions/<场次ID>-answers.md
 - 模型和 Base URL 可改，兼容 OpenAI 风格的 `/chat/completions` 接口。
 - 不配置 Key 也能听写、记录、导出答题包，但不能判卷。
 
+## 可选 MySQL 同步
+
+默认仍然使用 `data/` 下的 JSON 文件。设置页的「MySQL 同步（可选）」可以把当前数据同步到 MySQL，作为查询/备份/换机恢复用；JSON 仍是主存储，MySQL 是可选副本。
+
+- 在设置里填写 Host / 端口 / 用户 / 密码 / 数据库，保存后点「测试连接」。
+- 「同步到 MySQL」会用本机 JSON 覆盖 MySQL 里的同步表（会先确认）。
+- 「从 MySQL 恢复」会用 MySQL 覆盖本机 JSON（会先确认），适合换机或误删恢复。
+- 启用自动同步后，新建轮次、保存答案、AI 判卷、重置、导入/删除词本都会尽量同步；MySQL 出错不会影响本地听写。
+
+自动创建的表：
+
+```
+dictation_sessions      id, created_at, source_name, seed, count, heard_count, payload JSON
+dictation_checks        session_id, applied_at, engine, correct, wrong, blank, uncertain, accuracy, payload JSON
+dictation_answers       session_id, saved_at, payload JSON
+dictation_settings      id, payload JSON
+dictation_resets        word, reset_at
+dictation_wordbooks     id, name, created_at, word_count, payload JSON
+```
+
+`payload` 是完整 JSON，方便恢复和直接查询。数据库密码只保存在本机 `data/mysql.json`，不会回传浏览器；这个文件已被 `.gitignore` 排除。Android 应用里的 `127.0.0.1` 指手机自己，不是电脑；如果要在 Android 上连电脑的 MySQL，需要把 Host 改成电脑局域网 IP，并让 MySQL 允许远程连接。
+
 ## 数据文件
 
 ```
@@ -169,6 +191,7 @@ data/
 ├─ sessions/                  每轮配置、词表、答案键、答题纸
 ├─ checks/                    检查记录 + 报告（进度由它们派生）
 ├─ wordbooks/                 导入的自定义词本（个人数据）
+├─ mysql.json                 可选 MySQL 同步配置（含数据库密码，个人数据）
 ├─ resets.json                单词重置记录
 └─ archive/                   「清空学习记录」时归档的旧检查
 ```

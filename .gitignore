@@ -8,6 +8,7 @@ data/wordbooks/
 data/archive/
 data/settings.json
 data/resets.json
+data/mysql.json
 
 # build artifacts and local Android toolchain/signing
 build-tools/

@@ -701,6 +701,8 @@ input[type="range"] { width: 100%; accent-color: var(--green); }
 .inline-form button { flex: 0 0 auto; white-space: nowrap; }
 .ai-card { grid-column: span 2; }
 .wordbook-card { grid-column: span 2; }
+.mysql-card { grid-column: span 2; }
+.mysql-enable { align-self: end; }
 .wordbook-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
 .wordbook-item {
   display: flex;
@@ -802,6 +804,7 @@ code {
   .field-wide { grid-column: span 2; }
   .ai-card { grid-column: auto; }
   .wordbook-card { grid-column: auto; }
+  .mysql-card { grid-column: auto; }
 }
 @media (max-width: 720px) {
   main { width: min(100% - 24px, 1180px); }

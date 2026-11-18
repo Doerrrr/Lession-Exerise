@@ -62,6 +62,16 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 - 导入/删除后后端会 `reload_custom`；如果手工改文件，需要重启服务。
 - 词本最多 10,000 词、2 MB；只收单个英文单词。
 
+## MySQL 同步（可选）
+
+- JSON 文件仍是主存储；MySQL 是可选的同步副本，不能因为 MySQL 故障影响本地听写。
+- 配置在 `data/mysql.json`，包含数据库密码；**不要打印、提交或上传该文件**。
+- 表：`dictation_sessions`、`dictation_checks`、`dictation_answers`、`dictation_settings`、`dictation_resets`、`dictation_wordbooks`；`payload` 列是完整 JSON。
+- 设置页可测试连接、同步到 MySQL、从 MySQL 恢复；同步/恢复会覆盖目标，必须确认。
+- 镜像写入是 best-effort；出错只记录到 `last_error`，不应让 API 报错。
+- 相关接口：`PUT /api/mysql/settings`、`POST /api/mysql/test`、`POST /api/mysql/sync`、`POST /api/mysql/restore`。
+- Android 应用里的 `127.0.0.1` 是手机自己；要连电脑的 MySQL 必须用电脑局域网 IP，并让 MySQL 允许远程连接。
+
 ## AI 判卷（DeepSeek）
 
 - 应用内点「AI 判卷」；检查记录带 `"engine": "deepseek"`、`model` 和每题 `reason`。
