@@ -19,6 +19,7 @@ import time
 import traceback
 import urllib.parse
 import webbrowser
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -60,13 +61,13 @@ def default_data_dir() -> Path:
 
 
 def ensure_seed_file(data_dir: Path) -> None:
-    """Copy the bundled read-only words.json into the writable data dir once."""
-    seed = APP_ROOT / "data" / "words.json"
-    target = data_dir / "words.json"
-    if target.exists() or not seed.exists():
-        return
-    data_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(seed, target)
+    """Copy available bundled vocabulary data into a new data directory."""
+    for name in ("words.json", "listening_frequency.json"):
+        seed = APP_ROOT / "data" / name
+        target = data_dir / name
+        if seed.is_file() and not target.exists():
+            data_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(seed, target)
 
 from dictation import __version__, ai, mysql, mysql_user, wordbooks  # noqa: E402
 from dictation.checking import (  # noqa: E402
@@ -86,7 +87,7 @@ from dictation.config import (  # noqa: E402
     now_iso,
     random_seed,
 )
-from dictation.sampling import sample_words, take_pool  # noqa: E402
+from dictation.sampling import frequency_key, sample_words, take_pool  # noqa: E402
 from dictation.sheet import build_sheet, effective_heard  # noqa: E402
 from dictation.store import (  # noqa: E402
     archive_learning,
@@ -94,6 +95,7 @@ from dictation.store import (  # noqa: E402
     list_sessions,
     load_answers,
     load_check,
+    load_familiar_words,
     load_session,
     load_settings,
     reset_word,
@@ -114,12 +116,15 @@ class ApiError(Exception):
 
 
 class App:
-    def __init__(self, data_dir: Path, web_dir: Path, owner: str = "local"):
+    def __init__(self, data_dir: Path, web_dir: Path, owner: str = "local",
+                 ai_data_dir: Path | None = None, *, builtin_words: Path | None = None):
         self.data_dir = data_dir.resolve()
         self.web_dir = web_dir.resolve()
         self.owner = owner
+        self.ai_data_dir = Path(ai_data_dir).resolve() if ai_data_dir else self.data_dir
+        self.ai_shared = self.ai_data_dir != self.data_dir
         ensure_dirs(self.data_dir)
-        self.words = WordRepository(self.data_dir)
+        self.words = WordRepository(self.data_dir, builtin_path=builtin_words)
         if owner == "local":
             self.mysql = mysql.MySQLStore(self.data_dir)
         else:
@@ -160,6 +165,7 @@ class App:
             "seed": session.get("seed"),
             "count": session.get("count"),
             "heard_count": session.get("heard_count") or 0,
+            "review_count": session.get("review_count") or 0,
             "effective_heard": effective_heard(session),
             "pool_requested": session.get("pool_requested"),
             "pool_available": session.get("pool_available"),
@@ -189,7 +195,7 @@ class App:
             "sources": self.words.source_counts(progress),
             "recent_sessions": recent,
             "pending": pending_sessions(self.data_dir),
-            "ai": ai.ai_status(self.data_dir),
+            "ai": ai.ai_status(self.ai_data_dir),
             "wordbooks": self.words.custom_book_summaries(progress),
             "mysql": self.mysql.status(),
         }
@@ -226,20 +232,27 @@ class App:
         repeat = 2 if repeat == 2 else 1
 
         progress = self.progress()
-        pool_all = self.words.source_pool(source_id, progress)
-        if not pool_all:
-            raise ApiError(409, "当前来源没有可听的词。新词本可能已清空；可改用全部词库复习，或在已掌握里重置单词。")
+        created_at = now_iso()
+        due = self.words.due_reviews(source["level"], progress, date.fromisoformat(created_at[:10]))
+        review_words = due[:count_requested]
+        due_keys = {normalize_word_key(word["word"]) for word in due}
+        pool_all = [
+            word for word in self.words.source_pool(source_id, progress)
+            if normalize_word_key(word["word"]) not in due_keys
+        ]
         candidate = take_pool(pool_all, pool_requested)
-        actual_count = min(count_requested, len(candidate))
-        if actual_count < 1:
-            raise ApiError(409, "候选池为空，无法开始。")
+        regular_count = min(count_requested - len(review_words), len(candidate))
+        actual_count = len(review_words) + regular_count
+        if not actual_count:
+            raise ApiError(409, "当前来源没有可听的词。可以切换词库或到「已掌握」查看复习计划。")
         if seed == 0:
             seed = random_seed()
-        selected = sample_words(candidate, actual_count, seed, order=order)
+        regular_words = sample_words(candidate, regular_count, seed, order=order) if regular_count else []
+        selected = [dict(word, n=n) for n, word in enumerate(review_words + regular_words, 1)]
         settings = self.settings()
         session = {
             "id": new_session_id(),
-            "created_at": now_iso(),
+            "created_at": created_at,
             "app_version": __version__,
             "source": source_id,
             "source_name": source["name"],
@@ -256,16 +269,17 @@ class App:
             "pool_size": len(candidate),
             "count_requested": count_requested,
             "count": actual_count,
+            "review_count": len(review_words),
             "heard_count": 0,
             "words": selected,
         }
         warnings: list[str] = []
         if actual_count < count_requested:
             warnings.append(
-                f"候选池只有 {len(candidate)} 个词，本轮实际听 {actual_count} 个（原计划 {count_requested} 个）。"
+                f"本轮可安排 {actual_count} 个词（原计划 {count_requested} 个）。"
             )
         if pool_requested and len(pool_all) < pool_requested:
-            warnings.append(f"当前词库只有 {len(pool_all)} 个可用词，已按实际数量取池。")
+            warnings.append(f"当前常规候选只有 {len(pool_all)} 个词，已按实际数量取池。")
         with self.lock:
             save_session(self.data_dir, session)
         self._mirror("mirror_session", session)
@@ -375,12 +389,13 @@ class App:
         if not wrong_items:
             raise ApiError(409, "本轮没有错题，全部正确。")
         original_words = {str(word.get("n")): word for word in (session.get("words") or [])}
+        familiar = load_familiar_words(self.data_dir)
         words = []
         for word in wrong_items:
             n = str(word.get("n"))
             original = original_words.get(n, {})
             text = str(word.get("word") or original.get("word") or "").strip()
-            if not text:
+            if not text or normalize_word_key(text) in familiar:
                 continue
             words.append({
                 "n": len(words) + 1,
@@ -439,9 +454,11 @@ class App:
     # AI grading
     # ------------------------------------------------------------------
     def ai_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.ai_shared:
+            raise ApiError(403, "服务器统一提供 AI Key，账号不需要个人设置")
         try:
             ai.save_ai_settings(
-                self.data_dir,
+                self.ai_data_dir,
                 api_key=payload.get("api_key"),
                 model=payload.get("model"),
                 base_url=payload.get("base_url"),
@@ -449,11 +466,11 @@ class App:
             )
         except ValueError as exc:
             raise ApiError(400, str(exc))
-        return {"ok": True, "ai": ai.ai_status(self.data_dir)}
+        return {"ok": True, "ai": ai.ai_status(self.ai_data_dir)}
 
     def ai_test(self) -> dict[str, Any]:
         try:
-            result = ai.test_connection(self.data_dir)
+            result = ai.test_connection(self.ai_data_dir)
         except ai.AiError as exc:
             raise ApiError(502, str(exc))
         return result
@@ -474,10 +491,11 @@ class App:
             raise ApiError(400, "还没有填写答案，请先填写或批量粘贴。")
         try:
             result = ai.grade_session(
-                self.data_dir,
+                self.ai_data_dir,
                 session,
                 answers,
                 threshold=int(self.settings().get("threshold") or 5),
+                history_dir=self.data_dir,
             )
         except ai.AiError as exc:
             raise ApiError(502, str(exc))
@@ -491,7 +509,7 @@ class App:
             "check": applied,
             "session": detail,
             "markdown": report_markdown(session, applied),
-            "ai": ai.ai_status(self.data_dir),
+            "ai": ai.ai_status(self.ai_data_dir),
         }
 
     # ------------------------------------------------------------------
@@ -582,11 +600,7 @@ class App:
         elif sort == "streak":
             filtered.sort(key=lambda w: (-(progress.state(w["word"]).streak if progress.state(w["word"]) else 0), w["word"].lower()))
         else:
-            filtered.sort(key=lambda w: (
-                w["frq"] if w["frq"] > 0 else 10**9,
-                w["bnc"] if w["bnc"] > 0 else 10**9,
-                w["word"].lower(),
-            ))
+            filtered.sort(key=frequency_key)
         total = len(filtered)
         start = (page - 1) * page_size
         items = [review_word(w, progress.state(w["word"])) for w in filtered[start:start + page_size]]
@@ -628,12 +642,21 @@ class App:
                 continue
             rows.append((word, state))
         title = {"new": "新词本", "wrong": "错题本", "mastered": "已掌握", "all": "全部词"}[book]
-        lines = [f"# {title}", "", f"共 {len(rows)} 个词。", "", "| 单词 | 释义 | 连对 | 错次 |", "|---|---|---|---|"]
+        listening = level in self.words.listening_words
+        if listening:
+            rows.sort(key=lambda pair: frequency_key(pair[0]))
+        columns = "| 单词 | 释义 | 连对 | 错次 |"
+        separator = "|---|---|---|---|"
+        if listening:
+            columns += " 听力词次 | 覆盖套数 |"
+            separator += "---|---|"
+        lines = [f"# {title}", "", f"共 {len(rows)} 个词。", "", columns, separator]
         for word, state in rows:
             translation = word["translation"].replace("\n", "；").replace("|", "\\|")
-            lines.append(
-                f"| {word['word']} | {translation} | {state.streak if state else 0} | {state.wrong_count if state else 0} |"
-            )
+            line = f"| {word['word']} | {translation} | {state.streak if state else 0} | {state.wrong_count if state else 0} |"
+            if listening:
+                line += f" {word['listening_frequency']} | {word['listening_papers']} |"
+            lines.append(line)
         return "\n".join(lines) + "\n", f"dictation-{book}.md"
 
     # ------------------------------------------------------------------
@@ -656,6 +679,23 @@ class App:
             return {"ok": True, "word": word, "counts": self.counts()}
         raise ApiError(400, "scope 只能是 all 或 word")
 
+    def set_familiar(self, payload: dict[str, Any]) -> dict[str, Any]:
+        word = normalize_word_key(str(payload.get("word") or ""))
+        marked = payload.get("familiar")
+        if not word or not self.words.get(word):
+            raise ApiError(400, "找不到这个词")
+        if not isinstance(marked, bool):
+            raise ApiError(400, "familiar 必须是布尔值")
+        with self.lock:
+            words = load_familiar_words(self.data_dir)
+            if marked:
+                words.add(word)
+            else:
+                words.discard(word)
+            settings = save_settings(self.data_dir, {"familiar_words": sorted(words)})
+            self._mirror("mirror_settings", settings)
+        return {"ok": True, "word": word, "familiar": marked}
+
     def update_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         if "threshold" not in payload:
             raise ApiError(400, "缺少 threshold")
@@ -665,8 +705,9 @@ class App:
             raise ApiError(400, "threshold 必须是数字")
         if not 1 <= threshold <= 20:
             raise ApiError(400, "掌握阈值需在 1–20 之间")
-        settings = save_settings(self.data_dir, {"threshold": threshold})
-        self._mirror("mirror_settings", settings)
+        with self.lock:
+            settings = save_settings(self.data_dir, {"threshold": threshold})
+            self._mirror("mirror_settings", settings)
         return {"ok": True, "settings": settings, "counts": self.counts()}
 
     # ------------------------------------------------------------------
@@ -745,10 +786,11 @@ class LocalContext:
 
 
 class ServerContext:
-    def __init__(self, data_dir: str | Path, web_dir: str | Path):
+    def __init__(self, data_dir: str | Path, web_dir: str | Path, *, shared_ai: bool = False):
         self.data_dir = Path(data_dir).resolve()
         self.web_dir = Path(web_dir).resolve()
         self.server_mode = True
+        self.shared_ai = shared_ai
         self.apps: dict[str, App] = {}
         self.tls = threading.local()
         self.app = AppProxy(self)
@@ -766,12 +808,15 @@ class ServerContext:
             return self.apps[safe]
         user_dir = self.data_dir / "users" / safe
         ensure_dirs(user_dir)
-        for name in ("words.json", "mysql.json"):
-            source = self.data_dir / name
-            target = user_dir / name
-            if source.exists() and not target.exists():
-                shutil.copyfile(source, target)
-        app = App(user_dir, self.web_dir, owner=username)
+        mysql_config = self.data_dir / "mysql.json"
+        user_mysql_config = user_dir / "mysql.json"
+        if mysql_config.exists() and not user_mysql_config.exists():
+            shutil.copyfile(mysql_config, user_mysql_config)
+        app = App(
+            user_dir, self.web_dir, owner=username,
+            ai_data_dir=self.data_dir if self.shared_ai else None,
+            builtin_words=self.data_dir / "words.json",
+        )
         self.apps[safe] = app
         return app
 
@@ -927,6 +972,9 @@ def make_handler(app: App, context: Any = None):
                 text, filename = app.export_notebook(query)
                 self._text(200, text, "text/markdown; charset=utf-8",
                            extra={"Content-Disposition": f'attachment; filename="{filename}"'})
+                return
+            if path == "/api/words/familiar" and method == "PUT":
+                self._json(200, app.set_familiar(self._body()))
                 return
             if path == "/api/reset" and method == "POST":
                 self._json(200, app.reset(self._body()))
@@ -1092,7 +1140,7 @@ def main() -> int:
     server_mode = str(server_config.get("mode") or "").lower() == "server"
     try:
         if server_mode:
-            context = ServerContext(data_dir, web_dir)
+            context = ServerContext(data_dir, web_dir, shared_ai=server_config.get("shared_ai") is True)
             handler = make_handler(context.app, context)
         else:
             local_owner = mysql.load_mysql_settings(data_dir).get("owner") or "local"

@@ -17,5 +17,6 @@ Get-ChildItem (Join-Path $py 'dictation') -Recurse -Directory -Filter '__pycache
 Get-ChildItem (Join-Path $assets 'web') -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $root 'web\*') (Join-Path $assets 'web') -Recurse -Force
 Copy-Item (Join-Path $root 'data\words.json') (Join-Path $assets 'data\words.json') -Force
+Copy-Item (Join-Path $root 'data\listening_frequency.json') (Join-Path $assets 'data\listening_frequency.json') -Force
 
 Write-Host 'Android Python assets synced.'

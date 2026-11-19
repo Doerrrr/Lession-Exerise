@@ -47,7 +47,7 @@ class AiSettingsTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         status = ai.ai_status(data)
         self.assertFalse(status["configured"])
-        self.assertEqual(status["model"], "deepseek-chat")
+        self.assertEqual(status["model"], "deepseek-flash")
 
         saved = ai.save_ai_settings(
             data,
@@ -106,13 +106,14 @@ class AiParseTests(unittest.TestCase):
 class AiGradeTests(unittest.TestCase):
     def test_build_request_contains_reference_and_answer(self):
         session = make_session()
-        messages, items = ai.build_grade_request(session, {"1": "放弃", "2": "能力"})
+        messages, items = ai.build_grade_request(session, {"1": "舍弃", "2": "能力"})
         self.assertEqual(len(messages), 2)
         self.assertIn("JSON", messages[0]["content"])
         payload = json.loads(messages[1]["content"])
-        self.assertEqual(payload["items"][0]["word"], "abandon")
-        self.assertEqual(payload["items"][0]["answer"], "放弃")
-        self.assertIn("放弃", payload["items"][0]["reference"])
+        self.assertEqual(len(payload["items"]), 1)
+        n, word, reference, answer = payload["items"][0]
+        self.assertEqual((n, word, answer), (1, "abandon", "舍弃"))
+        self.assertIn("放弃", reference)
         self.assertEqual(len(items), 3)
 
     def test_grade_with_fake_api(self):
@@ -120,22 +121,17 @@ class AiGradeTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         ai.save_ai_settings(data, api_key="sk-test")
         session = make_session()
-        answers = {"1": "放弃", "2": "能力", "3": "苹果"}
-        fake = json.dumps({
-            "results": [
-                {"n": 1, "verdict": "correct", "matched": "放弃", "reason": "命中"},
-                {"n": 2, "verdict": "wrong", "matched": "", "reason": "意思不对"},
-                {"n": 3, "verdict": "blank", "matched": "", "reason": "空"},
-            ]
-        }, ensure_ascii=False)
+        answers = {"1": "放弃", "2": "水果", "3": ""}
+        fake = '{"results":[[2,"W","意思不对"]]}'
         with patch("dictation.ai.call_chat", return_value=fake) as mocked:
             result = ai.grade_session(data, session, answers)
         mocked.assert_called_once()
         self.assertEqual(result["engine"], "deepseek")
-        self.assertEqual(result["model"], "deepseek-chat")
+        self.assertEqual(result["model"], "deepseek-flash")
         self.assertEqual(result["summary"]["correct"], 1)
         self.assertEqual(result["summary"]["wrong"], 1)
         self.assertEqual(result["summary"]["blank"], 1)
+        self.assertEqual(result["items"][0]["engine"], "local")
         self.assertEqual(result["items"][1]["reason"], "意思不对")
         self.assertIn("放弃", result["items"][0]["expected"])
 
@@ -154,7 +150,7 @@ class AiGradeTests(unittest.TestCase):
         tmp, data = make_data()
         self.addCleanup(tmp.cleanup)
         with self.assertRaises(ai.AiError):
-            ai.grade_session(data, make_session(), {"1": "放弃"})
+            ai.grade_session(data, make_session(), {"1": "舍弃"})
 
 
 if __name__ == "__main__":

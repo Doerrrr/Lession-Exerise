@@ -1,5 +1,15 @@
 # Third-party notices
 
+## CET listening frequency tables
+
+`data/listening_frequency.json` contains word counts derived from the listening
+transcript samples in [yiyisheh/CET4-vocabulary](https://github.com/yiyisheh/CET4-vocabulary)
+and Leif's [CET-6 Listening Resources & Analysis](https://doi.org/10.5281/zenodo.20474009).
+Leif publishes the resource collection under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+The tables remove headings and duplicate content, count word forms per band,
+and retain forms found in the ECDICT-based vocabulary. Exam audio, transcripts
+and analysis text are outside this repository.
+
 ## ECDICT
 
 The word list in `data/words.json` is derived from

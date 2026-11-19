@@ -2,12 +2,11 @@
 
 这个文件给后续接手本项目的 AI / 开发者看。
 
-## 最重要的规则：全部判卷走 API
+## 判卷入口
 
-- **从 v0.3.0 起，所有判卷都必须走应用内的「AI 判卷」**，调用 DeepSeek 或兼容的 `/chat/completions` API。
-- **不再提供本地判卷**：没有本地匹配 CLI、没有 `tools/check.py`、AI 返回不完整时也不会偷偷改用本地匹配。
-- 答题纸/答题包只作为备份；不要根据答题纸自行给出对错，也不要用本地规则写 `data/checks/`。
-- 历史记录里旧的本地检查结果只作为旧数据保留；新结果一律由 API 产生。
+- 使用应用内的「AI 判卷」。应用在发送请求前处理空白、完全匹配的参考义项，以及当前账号此前被模型判对的相同答案。
+- 其余题目调用 DeepSeek 或兼容的 `/chat/completions` 接口。AI 返回不完整时提示重试。
+- 答题纸和答题包用于备份。不要手工改写 `data/checks/`，也不要另设本地判卷 CLI。
 
 ## 项目结构
 
@@ -36,15 +35,16 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 
 1. 用户在听写页输入中文意思；Enter/下一个会保存上一题并清空输入框。
 2. 听写结束后，用户在答题页填写答案，点「AI 判卷」。
-3. 应用调用 DeepSeek/兼容 API；检查记录写入 `data/checks/<id>.json`，进度由它派生。
+3. 应用处理可本地判分的题，其余调用 DeepSeek/兼容 API；检查记录写入 `data/checks/<id>.json`，进度由它派生。
 4. 结果页可以每词发音、重听本轮、重听本轮错题。
-5. 如果 API Key 未配置、网络失败或 AI 返回不完整，应用会报错；引导用户检查设置/重试，**不要本地判卷**。
+5. 需要模型判分时，API Key 缺失、网络失败或返回不完整会提示检查设置或重试。
 
 ## 规则与不变量
 
 - **不要提前泄露答案**：`data/sessions/<id>.json` 含答案键；用户还没听写/填写时，不要把释义发到对话里。
 - 新词本 = 所有未掌握词；错题本 = 未掌握且 `wrong_count > 0` 的词；连续答对阈值默认 5。
-- 连续答对 5 次 → `mastered`，同时离开新词本和错题本。答错 → `streak=0`、`wrong_count+1`。
+- 默认连续答对 5 次后进入已掌握并生成复习日期。到期词优先入题，复习答错后用比正常少一次的连对次数恢复。
+- 熟识标记按账号保存在设置中，在已掌握页可取消。熟识词退出新抽题和错题重练。
 - 进度是从 `data/checks/*.json` 按场次创建时间派生出来的，**不要手写增量进度文件**。
 - `data/resets.json` 记录单词重置时间；重置只影响此时间之前的检查记录。
 - 只有实际播放过的题才应计入（`heard_count`）；答题纸里多出来的题号会被提示并忽略。
@@ -86,7 +86,7 @@ Invoke-RestMethod http://127.0.0.1:8765/api/health
 
 - 应用内点「AI 判卷」；检查记录带 `"engine": "deepseek"`、`model` 和每题 `reason`。
 - API Key 存在 `data/secrets.json`，**永远不要打印、复制或发送这个文件的内容**。
-- 判卷时会把本轮单词、参考释义和用户答案发送到用户配置的 DeepSeek / 兼容接口。
+- 判卷时只发送还需要模型判断的单词、参考释义和用户答案。服务器可选 `shared_ai: true` 使用管理员提供的账号级共享连接。
 - **AI 没有返回完整结果时直接报错，不 fallback 到本地匹配**；由用户重试。
 - 相关接口：`PUT /api/ai/settings`、`POST /api/ai/test`、`POST /api/sessions/<id>/ai-check`。
 - 结果页「重听本轮错题」：`POST /api/sessions/<id>/retry-wrong`，从该轮检查记录里取 wrong/blank/uncertain 的词新建一轮 `source: retry_wrong` 的会话；不会改动原轮次。
@@ -101,8 +101,8 @@ python -m unittest discover -s tests -v
 
 ## 注意
 
-- `data/words.json` 由 ECDICT 构建（MIT，见 `THIRD_PARTY_NOTICES.md`），当前 5,802 词（四级 3,846、六级 5,406、六级新增 1,956）。
-- 词频是 COCA `frq` 顺序，作为「听力词频」的近似；不是真题听力词频。
+- `data/words.json` 由 ECDICT 构建（MIT，见 `THIRD_PARTY_NOTICES.md`），收录四级、六级和雅思词。
+- 普通词本用 COCA `frq` 排序。四六级听力词本使用 `tools/build_listening_frequency.py` 生成的原文词频表，资料来源和口径见 README。
 - 浏览器 TTS 需要页面保持前台；应用已做后台自动暂停。
 - 蓝牙耳机第一词前可能还在激活：用户可打开「耳机保活（蓝牙预热）」，应用用极低音量静音音频保持通道；系统静音也有效。
 - 服务是单用户本地工具，不需要登录和 CORS。

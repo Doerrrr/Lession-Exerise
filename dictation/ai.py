@@ -1,57 +1,47 @@
 """Optional DeepSeek (OpenAI-compatible) AI grading for a dictation session.
 
 The API key lives only in ``data/secrets.json`` on this machine and is never
-returned to the browser.  The word list, reference meanings and the user's
-answers are sent to the configured endpoint when the user clicks "AI 判卷".
+returned to the browser. Only answers that cannot be graded locally are sent
+to the configured endpoint, with their word and reference meaning.
 """
 from __future__ import annotations
 
 import json
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from .checking import summarize_items
 from .config import now_iso
 from .sheet import effective_heard
-from .store import load_settings, read_json, write_json
+from .store import list_checks, load_settings, read_json, write_json
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-flash"
 SECRETS_FILE = "secrets.json"
+# Bump when the grading criteria change so old model decisions are rechecked.
+GRADING_RULES_VERSION = 1
 
-SYSTEM_PROMPT = """你是一位严格、公平的英语单词听写批改老师。
-学生会听到英文单词，然后写出中文意思。输入是一个 JSON，包含本轮每一题的题号 n、英文单词 word、参考释义 reference 和学生的答案 answer。
-请逐题判断：
-1. 学生答案命中 reference 中任意一个中文义项，或公认的同义表达，判 correct。
-2. 有错别字、漏字，但意思正确，判 correct。
-3. 答案为空，判 blank。
-4. 意思错误，判 wrong。
-5. 实在无法判断，判 uncertain，并在 reason 说明。
+SYSTEM_PROMPT = """批改英语单词听写的中文释义。输入 JSON 的 items 每行是 [题号, 单词, 参考释义, 学生答案]。
+忽略释义里的词性、领域标签和编号。答对任一义项即可，接受同义词、口语、附加解释及不改变原意的错漏字。只有字面相似、核心义项错误或改变词义的错别字判错。空白或仅有标点判未作答。无法确定时判待确认。以给定释义为准。
+只返回 JSON，每个输入题号恰好一条结果，题号原样保留。
+- 正确：[题号,"C","命中义项"]，同义或错漏字需要说明时加第四列简短理由。
+- 错误、待确认：[题号,"W"或"U","20字内的具体理由"]。
+- 未作答：[题号,"B"]。
+例如 {"results":[[1,"C","放弃"],[2,"W","把能力答成了水果"],[3,"B"],[4,"U","答案含义不明确"]]}。"""
 
-固定评分细则（每次请求都相同，先读规则再读题目）：
-- reference 里的词性标记（n. / vt. / vi. / adj. / adv. / prep. 等）、方括号标签（如 [经]）、编号和分隔符都忽略，只比较中文义项。
-- reference 有多个义项时，学生答出其中任意一个义项即 correct，不要求写全。
-- 学生写的是近义词、同义词、常见口语表达，且在该词义范围内，判 correct。
-- 一个中文词里有明显错别字，但读音/字形接近且意思正确，判 correct；完全改变词义的错别字判 wrong。
-- 学生答案与 reference 的义项只有字面相似、但意思明显不同，判 wrong；不要为了宽容而误判 correct。
-- 学生答案包含额外解释但核心义项正确，判 correct；核心义项错误，判 wrong。
-- answer 为空字符串、只有标点或只有空白，判 blank。
-- 无法确定时判 uncertain，不要猜；reason 写清楚原因。
-- 只判给定的题，不新增题号，不修改 word 和 reference。
+SENSE_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,20}")
+PART_OF_SPEECH = re.compile(
+    r"^(?:(?:n|v|vt|vi|a|adj|adv|prep|pron|conj|interj|int|num|art|aux|abbr)\.\s*)+",
+    re.IGNORECASE,
+)
+COMPACT_VERDICTS = {"C": "correct", "W": "wrong", "B": "blank", "U": "uncertain"}
 
-输出示例（仅说明格式，不要把这些示例当成题目）：
-输入：{"items":[{"n":1,"word":"abandon","reference":"vt. 放弃；抛弃","answer":"放弃"},{"n":2,"word":"ability","reference":"n. 能力；才干","answer":"苹果"}]}
-输出：{"results":[{"n":1,"verdict":"correct","matched":"放弃","reason":"命中义项"},{"n":2,"verdict":"wrong","matched":"","reason":"意思不符"}]}
-
-只返回一个 JSON 对象，不要 markdown 代码块，不要额外文字。格式：
-{"results":[{"n":1,"verdict":"correct","matched":"命中的义项","reason":"不超过20字"}]}
-results 必须覆盖输入的每一题；verdict 只能是 correct、wrong、blank、uncertain。输入是纯 JSON，直接按固定规则判分。"""
-
-VERDICT_ALIASES = {
-    "correct": "correct", "正确": "correct", "对": "correct", "right": "correct",
+VERDICT_ALIASES = {    "correct": "correct", "正确": "correct", "对": "correct", "right": "correct",
     "wrong": "wrong", "错误": "wrong", "错": "wrong", "incorrect": "wrong",
     "blank": "blank", "空": "blank", "未作答": "blank", "空白": "blank",
     "uncertain": "uncertain", "不确定": "uncertain", "待确认": "uncertain",
@@ -74,11 +64,19 @@ def load_ai_settings(data_dir: str | Path) -> dict[str, str]:
     raw = read_json(secrets_path(data_dir), {}) or {}
     if not isinstance(raw, dict):
         raw = {}
+    base_url = (
+        str(raw.get("deepseek_base_url") or DEFAULT_BASE_URL).strip().rstrip("/")
+        or DEFAULT_BASE_URL
+    )
+    model = str(raw.get("deepseek_model") or "").strip()
+    if not model:
+        model = DEFAULT_MODEL if urlsplit(base_url).hostname == "api.deepseek.com" else "deepseek-chat"
+    elif model == "deepseek-chat" and urlsplit(base_url).hostname == "api.deepseek.com":
+        model = DEFAULT_MODEL
     return {
         "api_key": str(raw.get("deepseek_api_key") or "").strip(),
-        "model": str(raw.get("deepseek_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
-        "base_url": (str(raw.get("deepseek_base_url") or DEFAULT_BASE_URL).strip().rstrip("/")
-                     or DEFAULT_BASE_URL),
+        "model": model,
+        "base_url": base_url,
     }
 
 
@@ -162,6 +160,8 @@ def call_chat(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if payload["model"] == DEFAULT_MODEL and urlsplit(base_url).hostname == "api.deepseek.com":
+        payload["thinking"] = {"type": "disabled"}
     if response_format:
         payload["response_format"] = {"type": "json_object"}
     request = urllib.request.Request(
@@ -225,31 +225,111 @@ def test_connection(data_dir: str | Path) -> dict[str, Any]:
 # grading
 # ---------------------------------------------------------------------------
 
+def _short_reference(text: str, limit: int = 220) -> str:
+    """Keep only the leading senses; ECDICT tails are huge and rarely needed."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    for separator in ("；", ";", "，", ",", "。", " "):
+        pos = cut.rfind(separator)
+        if pos >= 80:
+            cut = cut[:pos]
+            break
+    return cut.strip()
+
+
+def local_verdict(reference: str, answer: str) -> str | None:
+    """Decide blanks and exact Chinese senses listed in the reference."""
+    if not answer or all(
+        char.isspace() or unicodedata.category(char).startswith("P")
+        for char in answer
+    ):
+        return "blank"
+    if not SENSE_PATTERN.fullmatch(answer):
+        return None
+
+    for line in str(reference or "").splitlines():
+        line = line.strip()
+        # Dictionary lines marked with a part of speech also use commas as
+        # sense separators. Free-form definitions can contain prose commas.
+        separators = r"[,，;；]" if PART_OF_SPEECH.match(line) else r"[;；]"
+        for part in re.split(separators, line):
+            if PART_OF_SPEECH.sub("", part.strip()).strip() == answer:
+                return "correct"
+    return None
+
+
+def load_accepted_answers(
+    data_dir: str | Path, model: str, base_url: str
+) -> set[tuple[str, str, str]]:
+    """Index consistent positive model decisions from this user's saved checks."""
+    accepted = set()
+    disputed = set()
+    for check in list_checks(data_dir):
+        if (
+            check.get("engine") != "deepseek"
+            or check.get("model_called") is not True
+            or check.get("model") != model
+            or check.get("base_url") != base_url
+            or check.get("grading_rules_version", 1) != GRADING_RULES_VERSION
+        ):
+            continue
+        # Before explicit versioning, the compact grader recorded model_called.
+        for item in check.get("items") or []:
+            if not isinstance(item, dict) or item.get("engine") != "ai":
+                continue
+            word = item.get("word")
+            reference = item.get("expected")
+            answer = item.get("answer")
+            if not all(isinstance(value, str) and value.strip() for value in (word, reference, answer)):
+                continue
+            key = (word, reference, answer.strip())
+            if item.get("verdict") == "correct":
+                accepted.add(key)
+            else:
+                disputed.add(key)
+    return accepted - disputed
+
+
 def build_grade_request(
     session: dict[str, Any],
     answers: dict[str, str],
+    *,
+    accepted_answers: set[tuple[str, str, str]] | None = None,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
-    heard = effective_heard(session)
     items: list[dict[str, Any]] = []
-    for word in (session.get("words") or [])[:heard]:
-        n = str(word.get("n", ""))
+    prompt_items = []
+    for word in (session.get("words") or [])[:effective_heard(session)]:
+        n = int(word.get("n") or 0)
+        spelling = word.get("word", "")
+        reference = word.get("translation", "")
+        answer = str(answers.get(str(n), "") or "").strip()
+        verdict = local_verdict(reference, answer)
+        learned = (
+            verdict is None and accepted_answers is not None
+            and (spelling, reference, answer) in accepted_answers
+        )
         items.append({
-            "n": int(word.get("n") or 0),
-            "word": word.get("word", ""),
-            "reference": word.get("translation", ""),
-            "answer": str(answers.get(n, "") or "").strip(),
+            "n": n,
+            "word": spelling,
+            "phonetic": word.get("phonetic", ""),
+            "reference": reference,
+            "answer": answer,
+            "local_verdict": verdict,
+            "learned": learned,
         })
-    user_content = json.dumps(
-        {"items": items},
-        ensure_ascii=False,
-    )
-    return (
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        items,
-    )
+        if verdict is None and not learned:
+            prompt_items.append([n, spelling, _short_reference(reference), answer])
+
+    if not prompt_items:
+        return [], items
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(
+            {"items": prompt_items}, ensure_ascii=False, separators=(",", ":")
+        )},
+    ], items
 
 
 def parse_ai_results(content: str) -> dict[str, dict[str, str]]:
@@ -284,19 +364,36 @@ def parse_ai_results(content: str) -> dict[str, dict[str, str]]:
         raise AiError("AI 判卷 JSON 缺少 results 数组")
     parsed: dict[str, dict[str, str]] = {}
     for item in results:
-        if not isinstance(item, dict):
+        if isinstance(item, list) and 2 <= len(item) <= 4:
+            number, status, *details = item
+            verdict = COMPACT_VERDICTS.get(str(status))
+            if verdict is None or not all(isinstance(value, str) for value in details):
+                continue
+            detail = details[0] if details else ""
+            matched = detail if verdict == "correct" else ""
+            if verdict == "correct":
+                reason = details[1] if len(details) == 2 else "命中义项"
+            elif verdict == "blank":
+                reason = "未作答"
+            else:
+                reason = detail
+            if verdict in ("wrong", "uncertain") and not reason.strip():
+                continue
+        elif isinstance(item, dict):
+            number = item.get("n") or item.get("index") or item.get("number")
+            status = str(item.get("verdict") or item.get("result") or "").strip().lower()
+            verdict = VERDICT_ALIASES.get(status, "uncertain")
+            matched = str(item.get("matched") or "")
+            reason = str(item.get("reason") or "")
+        else:
             continue
         try:
-            n = int(item.get("n") or item.get("index") or item.get("number"))
+            n = int(number)
         except (TypeError, ValueError):
             continue
-        verdict = str(item.get("verdict") or item.get("result") or "").strip().lower()
-        verdict = VERDICT_ALIASES.get(verdict, "uncertain")
-        parsed[str(n)] = {
-            "verdict": verdict,
-            "matched": str(item.get("matched") or "")[:200],
-            "reason": str(item.get("reason") or "")[:200],
-        }
+        if str(n) in parsed:
+            raise AiError(f"AI 判卷重复返回题号 {n}，请重试")
+        parsed[str(n)] = {"verdict": verdict, "matched": matched[:200], "reason": reason[:200]}
     if not parsed:
         raise AiError("AI 判卷没有返回任何可用的题目结果")
     return parsed
@@ -308,37 +405,48 @@ def grade_session(
     answers: dict[str, str],
     *,
     threshold: int | None = None,
+    history_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     settings = load_ai_settings(data_dir)
-    if not settings["api_key"]:
-        raise AiError("还没有配置 DeepSeek API Key，请先在设置里填写。")
-    messages, request_items = build_grade_request(session, answers)
-    usage: dict[str, Any] = {}
-    content = call_chat(
-        settings["api_key"],
-        settings["base_url"],
-        settings["model"],
-        messages,
-        max_tokens=4096,
-        response_format=True,
-        timeout=120,
-        usage=usage,
+    accepted = load_accepted_answers(
+        data_dir if history_dir is None else history_dir, settings["model"], settings["base_url"]
     )
-    ai_results = parse_ai_results(content)
+    messages, request_items = build_grade_request(session, answers, accepted_answers=accepted)
+    usage: dict[str, Any] = {}
     if threshold is None:
         threshold = int(load_settings(data_dir).get("threshold", 5))
+    ai_results = {}
+    if messages:
+        content = call_chat(
+            settings["api_key"],
+            settings["base_url"],
+            settings["model"],
+            messages,
+            max_tokens=4096,
+            response_format=True,
+            timeout=120,
+            usage=usage,
+        )
+        ai_results = parse_ai_results(content)
+
     items: list[dict[str, Any]] = []
     missing: list[str] = []
     for item in request_items:
         n = str(item["n"])
-        answer = str(item.get("answer") or "").strip()
-        ai = ai_results.get(n)
-        if not answer:
-            verdict, matched, reason = "blank", "", (ai or {}).get("reason", "")
-        elif ai is not None:
-            verdict = ai["verdict"]
-            matched = ai["matched"]
-            reason = ai["reason"]
+        answer = item["answer"]
+        local = item["local_verdict"]
+        ai_result = ai_results.get(n)
+        if local == "blank":
+            verdict, matched, reason, engine = "blank", "", "未作答", "blank"
+        elif local == "correct":
+            verdict, matched, reason, engine = "correct", answer, "与参考义项完全匹配", "local"
+        elif item["learned"]:
+            verdict, matched, reason, engine = "correct", answer, "相同答案此前已判对", "learned"
+        elif ai_result is not None:
+            verdict = ai_result["verdict"]
+            matched = ai_result["matched"]
+            reason = ai_result["reason"]
+            engine = "ai"
         else:
             missing.append(n)
             continue
@@ -346,14 +454,14 @@ def grade_session(
         items.append({
             "n": item["n"],
             "word": item["word"],
-            "phonetic": "",
+            "phonetic": item["phonetic"],
             "answer": answer,
             "verdict": verdict,
             "score": score,
             "matched": matched,
             "reason": reason,
             "expected": item["reference"],
-            "engine": "ai" if ai is not None and answer else "blank",
+            "engine": engine,
         })
     if missing:
         raise AiError(
@@ -361,11 +469,6 @@ def grade_session(
             + "、".join(missing[:20])
             + ("…" if len(missing) > 20 else "")
         )
-    # Fill phonetics from the session word records (request items don't carry
-    # them to keep the prompt compact).
-    phonetic_by_n = {str(w.get("n")): w.get("phonetic", "") for w in session.get("words") or []}
-    for item in items:
-        item["phonetic"] = phonetic_by_n.get(str(item["n"]), "")
     summary = summarize_items(items)
     return {
         "session_id": session["id"],
@@ -378,6 +481,8 @@ def grade_session(
         "summary": summary,
         "warnings": [],
         "engine": "deepseek",
+        "model_called": bool(messages),
+        "grading_rules_version": GRADING_RULES_VERSION,
         "usage": usage,
         "model": settings["model"],
         "base_url": settings["base_url"],

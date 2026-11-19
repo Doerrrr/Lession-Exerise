@@ -6,6 +6,8 @@ from typing import Any, Iterable
 
 
 def frequency_key(word: dict[str, Any]) -> tuple[int, int, str]:
+    if "listening_frequency" in word:
+        return (-word["listening_frequency"], -word["listening_papers"], word["word"].lower())
     frq = int(word.get("frq") or 0)
     bnc = int(word.get("bnc") or 0)
     return (

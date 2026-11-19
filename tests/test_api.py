@@ -105,7 +105,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(state["stats"]["total"], 7)
         self.assertEqual(state["stats"]["new"], 7)
-        self.assertEqual(len(state["sources"]), 8)
+        sources = {source["id"]: source for source in state["sources"]}
+        self.assertEqual(sources["new_cet4"]["count"], 6)
+        self.assertIn("new_ielts", sources)
+        self.assertIn("new_cet4_listening", sources)
+        self.assertIn("new_cet6_listening", sources)
         status, html = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn("听写本", html)
@@ -127,6 +131,24 @@ class ApiTests(unittest.TestCase):
         )
         # The new-word book is CET-4 only and its top-5 pool is fixed.
         self.assertTrue(all(w["word"] != "zebra" for w in session["words"]))
+
+    def test_listening_frequency_selects_and_exports_by_transcript_count(self):
+        (self.data / "listening_frequency.json").write_text(
+            json.dumps({"cet4": {"words": [["zebra", 25, 8], ["banana", 9, 4]]}}),
+            encoding="utf-8",
+        )
+        self.app.words = WordRepository(self.data)
+        status, data = self.request("POST", "/api/sessions", {
+            "source": "new_cet4_listening", "pool": 1, "count": 1, "seed": 5,
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual([word["word"] for word in data["session"]["words"]], ["zebra"])
+        _, book = self.request("GET", "/api/books?level=cet4_listening&book=all")
+        self.assertEqual(book["items"][0]["listening_frequency"], 25)
+        self.assertEqual(book["items"][0]["listening_papers"], 8)
+        _, markdown = self.request("GET", "/api/export/notebook?level=cet4_listening&book=all")
+        self.assertIn("听力词次 | 覆盖套数", markdown)
+        self.assertLess(markdown.index("zebra"), markdown.index("banana"))
 
     def test_count_is_capped_by_pool(self):
         status, data = self.request("POST", "/api/sessions", {

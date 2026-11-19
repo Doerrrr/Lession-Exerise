@@ -106,6 +106,13 @@ def save_settings(data_dir: str | Path, settings: dict[str, Any]) -> dict[str, A
     return merged
 
 
+def load_familiar_words(data_dir: str | Path) -> set[str]:
+    words = load_settings(data_dir).get("familiar_words")
+    if not isinstance(words, list):
+        return set()
+    return {word.strip().lower() for word in words if isinstance(word, str) and word.strip()}
+
+
 # ---------------------------------------------------------------------------
 # sessions
 # ---------------------------------------------------------------------------

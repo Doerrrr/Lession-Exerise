@@ -13,6 +13,7 @@ from .store import (
     list_checks,
     list_sessions,
     load_check,
+    load_familiar_words,
     load_resets,
     load_session,
     load_settings,
@@ -54,6 +55,7 @@ def load_events(data_dir: str | Path, exclude_session_id: str | None = None) -> 
         events.append({
             "session_id": session_id,
             "created_at": created_at,
+            "checked_at": check.get("applied_at") or check.get("graded_at") or created_at,
             "items": items,
         })
     return events
@@ -68,7 +70,7 @@ def build_progress(
         threshold = int(load_settings(data_dir).get("threshold", 5))
     events = load_events(data_dir, exclude_session_id=exclude_session_id)
     resets = load_resets(data_dir)
-    return derive(events, threshold, resets)
+    return derive(events, threshold, resets, load_familiar_words(data_dir))
 
 
 def book_counts(progress: Progress, total_words: int) -> dict[str, int]:
@@ -189,20 +191,19 @@ def apply_result(
     session_id = session["id"]
     events = load_events(data_dir, exclude_session_id=session_id)
     resets = load_resets(data_dir)
-    before = derive(
-        events,
-        threshold,
-        resets,
-    )
+    familiar_words = load_familiar_words(data_dir)
+    before = derive(events, threshold, resets, familiar_words)
+    applied_at = now_iso()
     event = {
         "session_id": session_id,
-        "created_at": session.get("created_at") or now_iso(),
+        "created_at": session.get("created_at") or applied_at,
+        "checked_at": applied_at,
         "items": [
             {"word": item["word"], "verdict": item["verdict"]}
             for item in result.get("items") or []
         ],
     }
-    after = derive(events + [event], threshold, resets)
+    after = derive(events + [event], threshold, resets, familiar_words)
     newly_mastered = []
     for key, state in after.states.items():
         if state.mastered:
@@ -210,7 +211,11 @@ def apply_result(
             if not (old and old.mastered):
                 newly_mastered.append(state.word)
     newly_mastered.sort(key=str.lower)
-    result["applied_at"] = now_iso()
+    for item in result.get("items") or []:
+        state = after.state(item["word"])
+        if state and state.review_on:
+            item["review_on"] = state.review_on.isoformat()
+    result["applied_at"] = applied_at
     result["threshold"] = threshold
     result["newly_mastered"] = newly_mastered
     result["book_counts_before"] = book_counts(before, total_words)
@@ -241,7 +246,10 @@ def report_markdown(session: dict[str, Any], result: dict[str, Any]) -> str:
         f"- 检查时间：{result.get('applied_at', '')}",
     ]
     if result.get("engine") == "deepseek":
-        lines.append(f"- 判卷：DeepSeek（{result.get('model', 'deepseek-chat')}）")
+        if result.get("model_called") is False:
+            lines.append("- 判卷：本地")
+        else:
+            lines.append(f"- 判卷：DeepSeek（{result.get('model', 'deepseek-chat')}）")
     lines.extend([
         f"- 题目：{summary.get('total', 0)}；正确 {summary.get('correct', 0)}；错误 {summary.get('wrong', 0)}；未作答 {summary.get('blank', 0)}；待确认 {summary.get('uncertain', 0)}",
         f"- 正确率：{round(float(summary.get('accuracy') or 0) * 100, 1)}%",

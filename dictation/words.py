@@ -1,6 +1,7 @@
 """Vocabulary loading, source filtering and frequency order."""
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -8,11 +9,13 @@ from .config import SOURCES, SOURCE_BY_ID, normalize_word_key
 from .store import read_json
 from .wordbooks import load_books, summarize_book
 
+LISTENING_LEVELS = {"cet4_listening": "cet4", "cet6_listening": "cet6"}
+
 
 class WordRepository:
-    def __init__(self, data_dir: str | Path):
+    def __init__(self, data_dir: str | Path, *, builtin_path: Path | None = None):
         self.data_dir = Path(data_dir)
-        path = self.data_dir / "words.json"
+        path = builtin_path if builtin_path is not None else self.data_dir / "words.json"
         if not path.exists():
             raise FileNotFoundError(
                 f"找不到词库 {path}，请先运行：python tools/build_words.py"
@@ -38,6 +41,15 @@ class WordRepository:
                 continue
             self.by_word[key] = entry
             self.words.append(entry)
+        frequency = read_json(path.with_name("listening_frequency.json"), {}) or {}
+        self.listening_words = {
+            level: [
+                {**self.by_word[word], "listening_frequency": count, "listening_papers": papers}
+                for word, count, papers in frequency.get(band, {}).get("words", [])
+                if word in self.by_word
+            ]
+            for level, band in LISTENING_LEVELS.items()
+        }
         self.custom_books: list[dict[str, Any]] = []
         self.custom_by_id: dict[str, dict[str, Any]] = {}
         self.custom_words: list[dict[str, Any]] = []
@@ -121,10 +133,10 @@ class WordRepository:
             return self.all_words()
         if level == "builtin":
             return list(self.words)
-        if level == "cet4":
-            return [w for w in self.words if "cet4" in w["tags"]]
-        if level == "cet6":
-            return [w for w in self.words if "cet6" in w["tags"]]
+        if level in self.listening_words:
+            return self.listening_words[level]
+        if level in {"cet4", "cet6", "ielts"}:
+            return [w for w in self.words if level in w["tags"]]
         if level == "cet6_new":
             return [w for w in self.words if "cet6" in w["tags"] and "cet4" not in w["tags"]]
         if level.startswith("custom:"):
@@ -140,12 +152,12 @@ class WordRepository:
 
     def catalog_levels(self) -> list[str]:
         return (
-            ["all", "builtin", "cet4", "cet6", "cet6_new"]
+            ["all", "builtin", "cet4", "cet6", "cet6_new", "ielts", *LISTENING_LEVELS]
             + [f"custom:{book['id']}" for book in self.custom_books]
         )
 
     def level_counts(self) -> dict[str, int]:
-        counts = {"all": len(self.words), "cet4": 0, "cet6": 0, "cet6_new": 0}
+        counts = {"all": len(self.words), "cet4": 0, "cet6": 0, "cet6_new": 0, "ielts": 0}
         for w in self.words:
             tags = w["tags"]
             if "cet4" in tags:
@@ -154,6 +166,8 @@ class WordRepository:
                 counts["cet6"] += 1
                 if "cet4" not in tags:
                     counts["cet6_new"] += 1
+            if "ielts" in tags:
+                counts["ielts"] += 1
         return counts
 
     # ------------------------------------------------------------------
@@ -168,19 +182,18 @@ class WordRepository:
             if not book:
                 raise ValueError(f"未知自定义词本：{source_id}")
             base = list(book.get("words") or [])
-            if source.get("mode") == "all":
+            if progress is None:
                 return base
-            return [
-                word for word in base
-                if not (progress is not None and progress.is_mastered(word["word"]))
-            ]
+            if source.get("mode") == "all":
+                return [word for word in base if not progress.is_familiar(word["word"])]
+            return [word for word in base if not progress.is_mastered(word["word"])]
         if source_id == "wrong_all":
             base = self.all_words()
         else:
             base = self.level_words(source["level"])
         book_type = source["book"]
         if book_type == "all":
-            return base
+            return [word for word in base if progress is None or not progress.is_familiar(word["word"])]
         out = []
         for word in base:
             state = progress.state(word["word"]) if progress is not None else None
@@ -191,33 +204,36 @@ class WordRepository:
             out.append(word)
         return out
 
+    def due_reviews(self, level: str, progress: Any, today: date) -> list[dict[str, Any]]:
+        due = []
+        for word in self.level_words(level):
+            state = progress.state(word["word"])
+            if state and not state.familiar and state.review_on and state.review_on <= today:
+                due.append((state.review_on, word))
+        due.sort(key=lambda entry: (entry[0], normalize_word_key(entry[1]["word"])))
+        return [word for _, word in due]
+
     def source_counts(self, progress: Any | None = None) -> list[dict[str, Any]]:
-        result = []
-        for source in SOURCES:
-            pool = self.source_pool(source["id"], progress)
-            result.append({
-                "id": source["id"],
-                "name": source["name"],
-                "level": source["level"],
-                "book": source["book"],
-                "desc": source["desc"],
-                "count": len(pool),
-            })
+        today = date.today()
+        sources = list(SOURCES)
         for book in self.custom_books:
             for mode in ("new", "all"):
-                source_id = f"custom_{mode}:{book['id']}"
-                source = self.custom_source_info(source_id)
-                if not source:
-                    continue
-                pool = self.source_pool(source_id, progress)
-                result.append({
-                    "id": source_id,
-                    "name": source["name"],
-                    "level": source["level"],
-                    "book": "custom",
-                    "desc": source["desc"],
-                    "count": len(pool),
-                })
+                source = self.custom_source_info(f"custom_{mode}:{book['id']}")
+                if source:
+                    sources.append(source)
+        reviews_by_level: dict[str, set[str]] = {}
+        result = []
+        for source in sources:
+            level = source["level"]
+            if level not in reviews_by_level:
+                reviews_by_level[level] = {
+                    normalize_word_key(word["word"])
+                    for word in self.due_reviews(level, progress, today)
+                } if progress is not None else set()
+            reviews = reviews_by_level[level]
+            normal = self.source_pool(source["id"], progress)
+            regular_count = sum(normalize_word_key(word["word"]) not in reviews for word in normal)
+            result.append({**source, "count": regular_count + len(reviews), "review_due": len(reviews)})
         return result
 
     def total_count(self) -> int:
@@ -254,6 +270,9 @@ def review_word(word: dict[str, Any], state: Any | None = None) -> dict[str, Any
         "bnc": word.get("bnc", 0),
         "tags": word.get("tags", []),
     }
+    if "listening_frequency" in word:
+        data["listening_frequency"] = word["listening_frequency"]
+        data["listening_papers"] = word["listening_papers"]
     if state is not None:
         data.update({
             "streak": state.streak,
@@ -263,5 +282,9 @@ def review_word(word: dict[str, Any], state: Any | None = None) -> dict[str, Any
             "mastered": state.mastered,
             "last_seen": state.last_seen,
             "last_result": state.last_result,
+            "review_on": state.review_on.isoformat() if state.review_on else None,
+            "review_due": bool(state.review_on and state.review_on <= date.today()),
+            "relearning": state.relearning,
+            "familiar": state.familiar,
         })
     return data

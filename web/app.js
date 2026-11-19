@@ -72,6 +72,7 @@ const state = {
 
 let toastTimer = null;
 let searchTimer = null;
+let bookLoadId = 0;
 let answerDraftTimer = null;
 let answerPersistChain = Promise.resolve();
 
@@ -317,6 +318,7 @@ function renderStats() {
   setText('#hero-wrong', fmtNumber(stats.wrong));
   setText('#hero-threshold', threshold);
   setText('#rule-threshold', threshold);
+  setText('#rule-relearning-threshold', Math.max(1, threshold - 1));
   const bar = $('#hero-bar');
   if (bar) bar.style.width = `${total ? Math.min(100, (mastered / total) * 100) : 0}%`;
 }
@@ -395,21 +397,27 @@ function updateSetup() {
   const pool = Math.max(0, parseInt(poolInput.value || '0', 10) || 0);
   const count = Math.max(0, parseInt(countInput.value || '0', 10) || 0);
   const sourceCount = Number(source.count || 0);
-  const candidate = pool > 0 ? Math.min(pool, sourceCount) : sourceCount;
-  const actual = Math.min(count, candidate);
+  const reviewDue = Number(source.review_due || 0);
+  const reviews = Math.min(count, reviewDue);
+  const regular = sourceCount - reviewDue;
+  const candidate = pool > 0 ? Math.min(pool, regular) : regular;
+  const sampled = Math.min(count - reviews, candidate);
+  const actual = reviews + sampled;
   const poolRange = $('#pool-range');
   if (poolRange) poolRange.textContent = pool > 0 ? `候选池前 ${fmtNumber(pool)}` : '候选池全部';
   const hint = $('#pool-hint');
   if (hint) {
     if (!sourceCount) {
-      hint.innerHTML = `<b>${escapeHtml(source.name)}</b> 目前没有可听的词。新词本可能已经清空；可以改用「全部词库」复习，或在已掌握里重置单词。`;
+      hint.innerHTML = `<b>${escapeHtml(source.name)}</b> 目前没有可听的词。可以切换词库或到「已掌握」查看复习日期。`;
     } else {
       const warn = actual < count
-        ? `<br><span class="warn">候选池只有 ${fmtNumber(candidate)} 个词，本轮实际会听 ${fmtNumber(actual)} 个。</span>`
+        ? `<br><span class="warn">本轮可安排 ${fmtNumber(actual)} 个词。</span>`
         : '';
-      hint.innerHTML = `当前 <b>${escapeHtml(source.name)}</b> 有 <b>${fmtNumber(sourceCount)}</b> 个可用词；` +
-        `候选池 <b>${pool > 0 ? `前 ${fmtNumber(pool)} 个` : '全部'}</b>；` +
-        `本轮随机抽 <b>${fmtNumber(actual)}</b> 个。${warn}`;
+      const reviewHint = reviewDue
+        ? ` · 到期 ${fmtNumber(reviewDue)} 个，本轮优先复习 <b>${fmtNumber(reviews)}</b> 个`
+        : '';
+      hint.innerHTML = `当前 <b>${escapeHtml(source.name)}</b> 有 <b>${fmtNumber(sourceCount)}</b> 个可用词${reviewHint}。` +
+        `本轮按种子抽 <b>${fmtNumber(sampled)}</b> 个。${warn}`;
     }
   }
   const start = $('#start-btn');
@@ -427,11 +435,16 @@ function renderSettings() {
   setVoiceDiagnostic();
 
   const aiInfo = state.ai || {};
+  const serverAi = state.auth.mode === 'server';
   const aiStatus = $('#ai-status');
   if (aiStatus) {
-    aiStatus.textContent = aiInfo.configured ? '已配置' : '未配置';
-    aiStatus.className = aiInfo.configured ? 'tag' : 'tag warm';
+    aiStatus.textContent = serverAi
+      ? (aiInfo.configured ? '服务器统一' : '服务器未配置')
+      : (aiInfo.configured ? '已配置' : '未配置');
+    aiStatus.className = (serverAi ? aiInfo.configured : aiInfo.configured) ? 'tag' : 'tag warm';
   }
+  const keyField = $('#ai-key-field');
+  if (keyField) keyField.hidden = serverAi;
   const keyInput = $('#ai-key');
   if (keyInput) {
     keyInput.placeholder = aiInfo.configured
@@ -439,14 +452,26 @@ function renderSettings() {
       : 'sk-...';
   }
   const modelInput = $('#ai-model');
-  if (modelInput) modelInput.value = aiInfo.model || 'deepseek-chat';
+  if (modelInput) {
+    modelInput.value = aiInfo.model || 'deepseek-chat';
+    modelInput.disabled = serverAi;
+  }
   const baseInput = $('#ai-base');
-  if (baseInput) baseInput.value = aiInfo.base_url || 'https://api.deepseek.com';
+  if (baseInput) {
+    baseInput.value = aiInfo.base_url || 'https://api.deepseek.com';
+    baseInput.disabled = serverAi;
+  }
+  const saveBtn = $('#ai-save');
+  if (saveBtn) saveBtn.hidden = serverAi;
+  const clearBtn = $('#ai-clear');
+  if (clearBtn) clearBtn.hidden = serverAi;
   const aiHint = $('#ai-hint');
   if (aiHint) {
-    aiHint.textContent = aiInfo.configured
-      ? '已配置。答题页点「AI 判卷」即可自动判分；Key 只保存在本机。'
-      : '配置 API Key 后，答题页可以直接点「AI 判卷」自动判分；不配置也可以把答题纸发给我复核。';
+    aiHint.textContent = serverAi
+      ? '服务器统一提供 DeepSeek API Key；所有账号直接点「AI 判卷」即可，不需要个人配置。'
+      : (aiInfo.configured
+        ? '已配置。答题页点「AI 判卷」即可自动判分；Key 只保存在本机。'
+        : '配置 API Key 后，答题页可以直接点「AI 判卷」自动判分；不配置也可以把答题纸发给我复核。');
   }
   renderWordbooks();
   renderMysql();
@@ -852,13 +877,17 @@ function androidTtsAvailable() {
   return typeof window.AndroidTTS !== 'undefined' && window.AndroidTTS;
 }
 
+const speechCanceled = { ok: false, canceled: true };
+let activeSpeech = null;
+
+function speechFailure(error) {
+  return ['interrupted', 'canceled'].includes(error) ? speechCanceled : { ok: false, error };
+}
+
 window.__androidTtsCallbacks = window.__androidTtsCallbacks || {};
 window.__androidTtsDone = function (id, ok, reason) {
-  const entry = window.__androidTtsCallbacks[id];
-  if (!entry) return;
-  delete window.__androidTtsCallbacks[id];
-  if (entry.timer) clearTimeout(entry.timer);
-  entry.resolve(ok ? { ok: true } : { ok: false, error: reason || 'android-tts' });
+  const finish = window.__androidTtsCallbacks[id];
+  if (finish) finish(ok ? { ok: true } : speechFailure(reason || 'android-tts'));
 };
 
 function loadVoices() {
@@ -970,25 +999,31 @@ function warmUpSpeech() {
   }
 }
 
-function androidSpeakText(text) {
+function androidSpeakText(text, signal) {
   return new Promise((resolve) => {
     const id = `android-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const timer = setTimeout(() => {
+    const finish = (result) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
       delete window.__androidTtsCallbacks[id];
-      resolve({ ok: false, error: 'Android TTS 超时' });
-    }, Math.max(8000, String(text).length * 1500));
-    window.__androidTtsCallbacks[id] = { resolve, timer };
+      resolve(result);
+    };
+    const onAbort = () => finish(speechCanceled);
+    const timer = setTimeout(
+      () => finish({ ok: false, error: 'Android TTS 超时' }),
+      Math.max(8000, String(text).length * 1500),
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    window.__androidTtsCallbacks[id] = finish;
     try {
       window.AndroidTTS.speak(id, String(text), state.rate);
     } catch (err) {
-      clearTimeout(timer);
-      delete window.__androidTtsCallbacks[id];
-      resolve({ ok: false, error: String(err) });
+      finish({ ok: false, error: String(err) });
     }
   });
 }
 
-function webSpeakText(text) {
+function webSpeakText(text, signal) {
   return new Promise((resolve) => {
     if (!('speechSynthesis' in window)) {
       resolve({ ok: false, error: 'unsupported' });
@@ -1001,22 +1036,22 @@ function webSpeakText(text) {
     utterance.lang = (voice && voice.lang && voice.voiceURI !== 'android-tts') ? voice.lang : 'en-US';
     utterance.rate = state.rate;
     utterance.volume = 1;
-    let settled = false;
-    let timer = null;
     const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      utterance.onend = null;
+      utterance.onerror = null;
       resolve(result);
     };
-    timer = setTimeout(
+    const onAbort = () => finish(speechCanceled);
+    const timer = setTimeout(
       () => finish({ ok: false, error: 'timeout' }),
       Math.max(8000, String(text).length * 1500),
     );
+    signal.addEventListener('abort', onAbort, { once: true });
     utterance.onend = () => finish({ ok: true });
-    utterance.onerror = (event) => finish({ ok: false, error: (event && event.error) || 'error' });
+    utterance.onerror = (event) => finish(speechFailure(event?.error || 'error'));
     try {
-      synth.cancel();
       synth.resume();
       synth.speak(utterance);
     } catch (err) {
@@ -1026,17 +1061,25 @@ function webSpeakText(text) {
 }
 
 async function speakText(text) {
-  if (androidTtsAvailable()) {
-    const native = await androidSpeakText(text);
-    if (native.ok) return native;
-    if ('speechSynthesis' in window) {
-      const fallback = await webSpeakText(text);
-      if (fallback.ok) return fallback;
+  cancelSpeech();
+  const request = new AbortController();
+  activeSpeech = request;
+  const { signal } = request;
+  try {
+    if (androidTtsAvailable()) {
+      const native = await androidSpeakText(text, signal);
+      if (signal.aborted) return speechCanceled;
+      if (native.ok || native.canceled || !('speechSynthesis' in window)) return native;
+      const fallback = await webSpeakText(text, signal);
+      if (signal.aborted) return speechCanceled;
+      if (fallback.ok || fallback.canceled) return fallback;
       return { ok: false, error: `${native.error}；Web TTS: ${fallback.error}` };
     }
-    return native;
+    const result = await webSpeakText(text, signal);
+    return signal.aborted ? speechCanceled : result;
+  } finally {
+    if (activeSpeech === request) activeSpeech = null;
   }
-  return webSpeakText(text);
 }
 
 async function testVoice() {
@@ -1046,7 +1089,7 @@ async function testVoice() {
   }
   startAudioKeepAlive();
   const result = await speakText('abandon');
-  if (!result.ok) {
+  if (!result.ok && !result.canceled) {
     toast(`语音播放失败：${result.error}。可在设置 → 语音诊断里打开系统语音设置。`, 'error');
   }
 }
@@ -1060,7 +1103,7 @@ function speakWord(word) {
   }
   startAudioKeepAlive();
   speakText(text).then((result) => {
-    if (!result.ok) toast(`语音播放失败：${result.error}`, 'error');
+    if (!result.ok && !result.canceled) toast(`语音播放失败：${result.error}`, 'error');
   });
 }
 
@@ -1075,6 +1118,9 @@ function clearPlaybackTimers() {
 }
 
 function cancelSpeech() {
+  // Settle the previous request before a driver can report its interruption.
+  activeSpeech?.abort();
+  activeSpeech = null;
   if (androidTtsAvailable()) {
     try { window.AndroidTTS.stop(); } catch (err) { /* ignore */ }
   }
@@ -1102,7 +1148,8 @@ function startSession(session) {
   state.repeat = Number(session.repeat) === 2 ? 2 : 1;
   state.currentSessionId = session.id;
   localStorage.setItem('dictation.lastSession', session.id);
-  $('#session-source').textContent = session.source_name || '—';
+  const reviewText = session.review_count ? ` · 到期复习 ${session.review_count} 题` : '';
+  $('#session-source').textContent = (session.source_name || '—') + reviewText;
   $('#session-seed').textContent = session.seed ?? '—';
   $('#session-total').textContent = String(state.words.length);
   showView('session');
@@ -1162,8 +1209,10 @@ async function playCurrent() {
     if (token !== state.runToken) return;
     const result = await speakText(word.word);
     if (token !== state.runToken) return;
-    if (!result.ok && !['interrupted', 'canceled'].includes(result.error)) {
-      toast(`语音播放失败：${result.error}。点「继续」重试，或换一个英文音色 / 换用 Edge。`, 'error');
+    if (!result.ok) {
+      if (!result.canceled) {
+        toast(`语音播放失败：${result.error}。点「继续」重试，或换一个英文音色 / 换用 Edge。`, 'error');
+      }
       state.phase = 'paused';
       updateSessionUI();
       return;
@@ -1783,12 +1832,16 @@ function renderResult(report) {
   const newly = check.newly_mastered || [];
   const before = check.book_counts_before || {};
   const after = check.book_counts_after || {};
+  const familiar = new Set(state.settings.familiar_words || []);
   const rows = items.map((item) => {
     const verdict = item.verdict || 'wrong';
     const expected = verdict === 'correct' ? '—' : escapeHtml(meaningText(item.expected || ''));
+    const reasonLabel = {local: '本地：', learned: '本地：', ai: 'AI：'}[item.engine] || '';
     const reason = item.reason
-      ? `<div class="hint">AI：${escapeHtml(item.reason)}</div>`
+      ? `<div class="hint">${reasonLabel}${escapeHtml(item.reason)}</div>`
       : '';
+    const marked = familiar.has(String(item.word).trim().toLowerCase());
+    const nextReview = !marked && item.review_on ? `<div class="hint result-next-review">下次复习 ${escapeHtml(item.review_on)}</div>` : '';
     return `
       <tr class="${escapeHtml(verdict)}">
         <td>${item.n}</td>
@@ -1801,17 +1854,26 @@ function renderResult(report) {
         </td>
         <td>${escapeHtml(item.answer || '—')}</td>
         <td><span class="verdict ${escapeHtml(verdict)}">${VERDICT_LABELS[verdict] || verdict}</span></td>
-        <td class="result-meaning">${expected}${reason}</td>
+        <td class="result-meaning">${expected}${reason}${nextReview}
+          ${familiarButton(item.word, marked, true)}
+        </td>
       </tr>`;
   }).join('');
+  const learnedCount = items.filter(item => item.engine === 'learned').length;
+  const localCount = items.filter(item => item.engine === 'local').length + learnedCount;
   const engineLine = check.engine === 'deepseek'
-    ? `DeepSeek · ${escapeHtml(check.model || 'deepseek-chat')}`
+    ? (check.model_called === false
+      ? '本轮未调用模型'
+      : `DeepSeek · ${escapeHtml(check.model || 'deepseek-chat')}`)
     : '历史判卷记录';
+  const learnedLine = learnedCount ? `（复用 ${learnedCount} 题）` : '';
+  const localLine = localCount ? ` · 本地判对 ${localCount} 题${learnedLine}` : '';
   const usage = check.usage || {};
   const cacheHit = Number(usage.prompt_cache_hit_tokens || 0);
   const cacheMiss = Number(usage.prompt_cache_miss_tokens || 0);
-  const cacheLine = (cacheHit || cacheMiss)
-    ? ` · 缓存命中 ${cacheHit} / 未命中 ${cacheMiss} tokens`
+  const outputTokens = Number(usage.completion_tokens || 0);
+  const cacheLine = (cacheHit || cacheMiss || outputTokens)
+    ? ` · 缓存命中 ${cacheHit} / 未命中 ${cacheMiss} / 输出 ${outputTokens} tokens`
     : '';
   panel.innerHTML = `
     <div class="card-head">
@@ -1821,7 +1883,7 @@ function renderResult(report) {
       </div>
       <span class="tag">已检查</span>
     </div>
-    <p class="result-ai-line">判卷引擎：${engineLine}${cacheLine}</p>
+    <p class="result-ai-line">判卷引擎：${engineLine}${localLine}${cacheLine}</p>
     <div class="result-summary">
       <div class="result-stat"><b>${summary.correct ?? 0}</b><span>正确</span></div>
       <div class="result-stat"><b>${summary.wrong ?? 0}</b><span>错误</span></div>
@@ -1850,6 +1912,7 @@ function renderResult(report) {
 /* books                                                               */
 /* ------------------------------------------------------------------ */
 async function loadBooks() {
+  const loadId = ++bookLoadId;
   const params = new URLSearchParams({
     book: state.books.book,
     level: state.books.level,
@@ -1860,10 +1923,11 @@ async function loadBooks() {
   });
   try {
     const data = await api(`/api/books?${params.toString()}`);
+    if (loadId !== bookLoadId) return;
     state.books = { ...state.books, ...data };
     renderBooks(data);
   } catch (err) {
-    toast(err.message, 'error');
+    if (loadId === bookLoadId) toast(err.message, 'error');
   }
 }
 
@@ -1877,13 +1941,14 @@ function renderBooks(data) {
   });
   const search = $('#book-search');
   if (search && search.value !== state.books.q) search.value = state.books.q;
+  const level = $('#book-level');
+  if (level) level.value = state.books.level;
   const sort = $('#book-sort');
   if (sort) sort.value = state.books.sort;
-  const threshold = Number(state.settings.threshold || 5);
   const bookLabels = {
-    new: `新词本 = 所有还没连续答对 ${threshold} 次的词（含错题）。`,
-    wrong: `错题本 = 新词本里答错过的词；连续答对 ${threshold} 次后同样移出。`,
-    mastered: `已掌握 = 连续答对 ${threshold} 次；可以重新学习放回新词本。`,
+    new: '未掌握的词，包含需要重新巩固的错题。',
+    wrong: '答错且尚未掌握的词。',
+    mastered: '查看下次复习日期，或取消熟识。',
   };
   if (summary) {
     summary.textContent = `${bookLabels[state.books.book] || ''} 当前显示 ${fmtNumber(data.total)} 个。`;
@@ -1894,9 +1959,13 @@ function renderBooks(data) {
     body.innerHTML = data.items.map((item) => {
       const streak = Number(item.streak || 0);
       const wrong = Number(item.wrong_count || 0);
-      const action = state.books.book === 'mastered'
+      const action = state.books.book === 'mastered' && !item.familiar
         ? `<button class="row-btn danger-text" type="button" data-reset-word="${escapeHtml(item.word)}">重新学习</button>`
-        : `<button class="row-btn" type="button" data-word-detail="${escapeHtml(item.word)}">详情</button>`;
+        : '';
+      const review = reviewStatus(item);
+      const listening = item.listening_frequency
+        ? `<div class="hint">听力 ${fmtNumber(item.listening_frequency)} 次 · ${fmtNumber(item.listening_papers)} 套</div>`
+        : '';
       const speak = `<button class="speak-btn" type="button" data-speak-word="${escapeHtml(item.word)}" title="听发音" aria-label="听 ${escapeHtml(item.word)}">${SPEAKER_SVG}</button>`;
       return `
         <tr>
@@ -1905,10 +1974,12 @@ function renderBooks(data) {
               <span class="phonetic">${escapeHtml(item.phonetic || '')}</span>
             </span>
           </td>
-          <td class="book-meaning">${escapeHtml(truncate(meaningText(item.translation), 110))}</td>
+          <td class="book-meaning">${escapeHtml(truncate(meaningText(item.translation), 110))}
+            ${listening}${review ? `<div class="hint">${escapeHtml(review)}</div>` : ''}
+          </td>
           <td><span class="streak-badge ${streak ? '' : 'zero'}">${streak}</span></td>
           <td>${wrong ? `<span class="wrong-badge">${wrong}</span>` : '—'}</td>
-          <td>${action} ${speak}</td>
+          <td>${familiarButton(item.word, item.familiar)} ${action} ${speak}</td>
         </tr>`;
     }).join('');
   }
@@ -1937,14 +2008,53 @@ function openWordDialog(word) {
   const dialog = $('#word-dialog');
   $('#dialog-word').textContent = item.word;
   const tags = (item.tags || []).map((tag) => tag.toUpperCase()).join(' · ');
+  const frequency = item.listening_frequency
+    ? `听力 ${fmtNumber(item.listening_frequency)} 次 · ${fmtNumber(item.listening_papers)} 套`
+    : `COCA 词频 ${fmtNumber(item.frq)}`;
   $('#dialog-body').innerHTML = `
-    <div class="phonetic">${escapeHtml(item.phonetic || '')} · 词频 ${fmtNumber(item.frq)} · ${escapeHtml(tags)}</div>
+    <div class="phonetic">${escapeHtml(item.phonetic || '')} · ${frequency} · ${escapeHtml(tags)}</div>
     <div class="dialog-meaning">${escapeHtml(item.translation || '')}</div>
     <div class="dialog-meta">
       连续答对 ${item.streak || 0} 次 · 答错 ${item.wrong_count || 0} 次 · 总出现 ${item.total_seen || 0} 次<br>
-      最后出现：${item.last_seen ? fmtDate(item.last_seen) : '—'} · 状态：${item.mastered ? '已掌握' : (item.wrong_count ? '错题本' : '新词本')}
+      最后出现：${item.last_seen ? fmtDate(item.last_seen) : '—'} · ${escapeHtml(reviewStatus(item) || (item.wrong_count ? '错题本' : '新词本'))}
     </div>`;
   if (typeof dialog.showModal === 'function') dialog.showModal();
+}
+
+function reviewStatus(item) {
+  if (item.familiar) return '熟识';
+  if (item.review_on) return `${item.review_due ? '已到期' : '下次复习'} ${item.review_on}`;
+  if (item.relearning) {
+    const target = Math.max(1, Number(state.settings.threshold || 5) - 1);
+    return `重新巩固 ${item.streak || 0}/${target} 次`;
+  }
+  return '';
+}
+
+function familiarButton(word, familiar, result = false) {
+  const label = familiar ? (result ? '已熟识' : '取消熟识') : '熟识';
+  return `<button class="row-btn" type="button" data-familiar-word="${escapeHtml(word)}"
+    data-familiar="${!familiar}" ${familiar && result ? 'disabled' : ''}>${label}</button>`;
+}
+
+async function changeFamiliar(button) {
+  const word = button.dataset.familiarWord;
+  const familiar = button.dataset.familiar === 'true';
+  button.disabled = true;
+  try {
+    await api('/api/words/familiar', { method: 'PUT', body: { word, familiar } });
+    if (state.view === 'books') {
+      await loadBooks();
+    } else if (familiar) {
+      button.textContent = '已熟识';
+      button.parentElement.querySelector('.result-next-review')?.remove();
+    }
+    toast(familiar ? `已标为熟识：${word}` : `已取消熟识：${word}`);
+    await loadState();
+  } catch (err) {
+    button.disabled = false;
+    toast(err.message, 'error');
+  }
 }
 
 async function resetWord(word) {
@@ -1961,13 +2071,14 @@ async function resetWord(word) {
 }
 
 function startWrongbook() {
-  const wrongSource = state.sources.find((source) => source.id === 'wrong_all');
+  const sourceId = state.books.level === 'ielts' ? 'wrong_ielts' : 'wrong_all';
+  const wrongSource = state.sources.find((source) => source.id === sourceId);
   if (!wrongSource || !wrongSource.count) {
     toast('错题本还是空的，先去听一轮吧。');
     return;
   }
   const select = $('#source');
-  if (select) select.value = 'wrong_all';
+  if (select) select.value = wrongSource.id;
   $('#pool').value = '0';
   $('#count').value = String(Math.min(20, wrongSource.count));
   setMode('auto');
@@ -2071,10 +2182,10 @@ async function saveThreshold() {
 }
 
 async function resetAll() {
-  if (!window.confirm('确定清空学习记录吗？\n现有检查记录会归档到 data/archive/，新词本回到全部单词。')) return;
+  if (!window.confirm('确定清空学习记录吗？\n现有检查记录会归档到 data/archive/，熟识标记保留。')) return;
   try {
     await api('/api/reset', { method: 'POST', body: { scope: 'all' } });
-    toast('学习记录已清空，新词本回到全部单词');
+    toast('学习记录已清空');
     await loadState();
   } catch (err) {
     toast(err.message, 'error');
@@ -2218,6 +2329,8 @@ function bindEvents() {
     }
   });
   $('#result-panel').addEventListener('click', (event) => {
+    const familiar = event.target.closest('[data-familiar-word]');
+    if (familiar) { changeFamiliar(familiar); return; }
     const speak = event.target.closest('[data-speak-word]');
     if (speak) { speakWord(speak.dataset.speakWord); return; }
     const replay = event.target.closest('[data-replay-session]');
@@ -2273,6 +2386,11 @@ function bindEvents() {
       loadBooks();
     }, 300);
   });
+  $('#book-level').addEventListener('change', () => {
+    state.books.level = $('#book-level').value;
+    state.books.page = 1;
+    loadBooks();
+  });
   $('#book-sort').addEventListener('change', () => {
     state.books.sort = $('#book-sort').value;
     state.books.page = 1;
@@ -2287,6 +2405,8 @@ function bindEvents() {
     loadBooks();
   });
   $('#book-body').addEventListener('click', (event) => {
+    const familiar = event.target.closest('[data-familiar-word]');
+    if (familiar) { changeFamiliar(familiar); return; }
     const speak = event.target.closest('[data-speak-word]');
     if (speak) { speakWord(speak.dataset.speakWord); return; }
     const reset = event.target.closest('[data-reset-word]');

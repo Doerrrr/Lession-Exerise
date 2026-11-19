@@ -148,9 +148,9 @@
       <aside class="side-stack">
         <div class="paper-card rule-card">
           <div class="card-head"><h2>新词本规则</h2></div>
-          <p>新词本一开始包含所选词库的<b>全部单词</b>。</p>
-          <p>每次检查后，连续答对 <b id="rule-threshold">5</b> 次的词会移入「已掌握」，下一轮不再读。</p>
-          <p>答错的词留在新词本，同时进入「错题本」；错题本不是另一套词，而是新词本里答错过的视图。</p>
+          <p>连续答对 <b id="rule-threshold">5</b> 次后进入「已掌握」，到期优先复习。</p>
+          <p>复习答对会延长间隔；答错回到新词本，连对 <b id="rule-relearning-threshold">4</b> 次恢复掌握。</p>
+          <p>标记「熟识」的词会退出抽题，可在「已掌握」里取消。</p>
           <button class="link-btn" data-nav="books" type="button">打开词本 →</button>
         </div>
 
@@ -244,10 +244,20 @@
           <button data-book="new" class="active" type="button">新词本</button>
           <button data-book="wrong" type="button">错题本</button>
           <button data-book="mastered" type="button">已掌握</button>
+          <button data-book="all" type="button">全部</button>
         </div>
         <div class="book-filters">
           <input id="book-search" type="search" placeholder="搜索单词或释义">
-          <select id="book-sort">
+          <select id="book-level" aria-label="词库范围">
+            <option value="all">全部词库</option>
+            <option value="cet4">四级</option>
+            <option value="cet6">六级</option>
+            <option value="cet6_new">六级新增</option>
+            <option value="ielts">雅思</option>
+            <option value="cet4_listening">四级听力</option>
+            <option value="cet6_listening">六级听力</option>
+          </select>
+          <select id="book-sort" aria-label="排序方式">
             <option value="frq">按词频</option>
             <option value="alpha">按字母</option>
             <option value="wrong">错误次数</option>
@@ -303,14 +313,14 @@
       <div class="paper-card ai-card">
         <div class="card-head"><h2>AI 判卷（DeepSeek）</h2><span id="ai-status" class="tag warm">未配置</span></div>
         <p class="hint" id="ai-hint">配置 API Key 后，答题页可以直接点「AI 判卷」自动判分。</p>
-        <label class="field">API Key
+        <label class="field" id="ai-key-field">API Key
           <input id="ai-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
         </label>
         <div class="field-grid two">
-          <label class="field">模型
+          <label class="field" id="ai-model-field">模型
             <input id="ai-model" type="text" value="deepseek-chat" spellcheck="false">
           </label>
-          <label class="field">Base URL
+          <label class="field" id="ai-base-field">Base URL
             <input id="ai-base" type="text" value="https://api.deepseek.com" spellcheck="false">
           </label>
         </div>
@@ -371,13 +381,13 @@
       </div>
       <div class="paper-card danger-card">
         <div class="card-head"><h2>清空学习记录</h2></div>
-        <p class="hint">会归档现有检查记录，新词本回到全部单词；历史场次和答题纸保留。</p>
+        <p class="hint">会归档现有检查记录。保留熟识标记、历史场次和答题纸。</p>
         <button id="reset-all" class="danger" type="button">清空学习记录</button>
       </div>
       <div class="paper-card">
         <div class="card-head"><h2>关于</h2></div>
         <p class="hint">听写本 v<span id="app-version">0.1.0</span> · 本地运行，数据保存在 <code>data/</code>。</p>
-        <p class="hint">词库来自 ECDICT（MIT），词频为 COCA 当代语料库顺序。</p>
+        <p class="hint">释义来自 ECDICT（MIT）。普通词本使用 COCA 词频；四六级听力词本使用听力原文统计。</p>
       </div>
     </div>
   </section>

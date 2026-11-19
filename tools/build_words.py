@@ -6,7 +6,7 @@ Usage:
     python tools/build_words.py --csv path.csv # build from a local CSV
     python tools/build_words.py --keep-csv     # keep the downloaded CSV
 
-Only CET-4 / CET-6 tagged single words are kept.  The resulting JSON is the
+Only CET-4 / CET-6 / IELTS tagged single words are kept.  The resulting JSON is the
 word source used by the dictation app; runtime never needs network access.
 """
 from __future__ import annotations
@@ -95,7 +95,7 @@ def build(csv_path: Path) -> dict:
         for row in reader:
             rows += 1
             tags = set((row.get("tag") or "").split())
-            if not tags & {"cet4", "cet6"}:
+            if not tags & {"cet4", "cet6", "ielts"}:
                 continue
             word = (row.get("word") or "").strip()
             if not WORD_RE.match(word):
@@ -114,7 +114,7 @@ def build(csv_path: Path) -> dict:
                 "translation": translation,
                 "frq": frq,
                 "bnc": bnc,
-                "tags": sorted(tags & {"cet4", "cet6"}),
+                "tags": sorted(tags & {"cet4", "cet6", "ielts"}),
                 "_translation_len": len(translation),
             }
             old = merged.get(key)
@@ -151,6 +151,7 @@ def build(csv_path: Path) -> dict:
         "all": len(words),
         "cet4": count("cet4"),
         "cet6": count("cet6"),
+        "ielts": count("ielts"),
         "cet6_new": sum(1 for w in words if "cet6" in w["tags"] and "cet4" not in w["tags"]),
     }
     meta = {
